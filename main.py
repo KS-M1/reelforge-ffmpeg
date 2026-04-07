@@ -4,19 +4,26 @@ Accepts full template spec + trimmed clips, renders branded Reels/Shorts.
 """
 from __future__ import annotations
 
+import base64
 import os
 import re
 import shutil
 import subprocess
+import time
 import uuid
-from typing import Any, Optional, Union
+from typing import Optional, Union
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="ReelForge FFmpeg Service")
+
+# In-memory store for stitched videos awaiting overlay
+# video_id → {dir, stitched, crf, created_at}
+STITCH_STORE: dict[str, dict] = {}
+STITCH_TTL_S = 1800  # 30 minutes — auto-expire if /overlay never called
 
 FONT_DIR = "/usr/local/share/fonts/google"
 TMP_DIR  = "/tmp/reelforge"
@@ -184,17 +191,26 @@ def _y_expr(position: str, zone: str = "main") -> str:
     All values are concrete pixel offsets — no drawtext variables in drawbox exprs.
     """
     if position == "top":
-        if zone == "main":     return "80"
-        if zone == "divider":  return "210"
-        if zone == "subtitle": return "230"
+        if zone == "main":
+            return "80"
+        if zone == "divider":
+            return "210"
+        if zone == "subtitle":
+            return "230"
     if position == "center":
-        if zone == "main":     return "(h-text_h)/2-40"
-        if zone == "divider":  return "h/2+30"
-        if zone == "subtitle": return "h/2+50"
+        if zone == "main":
+            return "(h-text_h)/2-40"
+        if zone == "divider":
+            return "h/2+30"
+        if zone == "subtitle":
+            return "h/2+50"
     # default: bottom
-    if zone == "main":     return "h-200"
-    if zone == "divider":  return "h-118"
-    if zone == "subtitle": return "h-100"
+    if zone == "main":
+        return "h-200"
+    if zone == "divider":
+        return "h-118"
+    if zone == "subtitle":
+        return "h-100"
     return "h-200"
 
 
@@ -314,6 +330,371 @@ def ffmpeg_version():
 @app.get("/templates")
 def list_templates():
     return {"templates": list(LEGACY_TEMPLATES.keys())}
+
+
+# ── Local / EasyPanel test endpoint (no Google Drive needed) ─────────────────────
+
+@app.post("/test-render")
+async def test_render(
+    background_tasks: BackgroundTasks,
+    clips:         list[UploadFile] = File(...),
+    hook_text:     str              = "Elevate Your Style",
+    template:      str              = "milan",
+    text_position: str              = "bottom",
+    quality:       str              = "high",
+    music:         Optional[UploadFile] = File(None),
+):
+    """
+    All-in-one test endpoint — upload clips directly, get back a rendered MP4.
+    No Google Drive or backend needed. Perfect for testing on EasyPanel directly.
+
+    curl example (1 clip):
+        curl -X POST https://<easypanel-host>/test-render \\
+          -F "clips=@clip1.mp4" \\
+          -F "hook_text=DROP NOW" \\
+          -F "template=tokyo" \\
+          -F "text_position=bottom" \\
+          -F "quality=high" \\
+          --output result.mp4
+
+    curl example (2 clips + music):
+        curl -X POST https://<easypanel-host>/test-render \\
+          -F "clips=@clip1.mp4" \\
+          -F "clips=@clip2.mp4" \\
+          -F "hook_text=RISE AND SHINE" \\
+          -F "template=milan" \\
+          -F "music=@bg.mp3" \\
+          --output result.mp4
+    """
+    if not clips:
+        raise HTTPException(status_code=400, detail="At least one clip is required.")
+    if len(clips) > 4:
+        raise HTTPException(status_code=400, detail="Maximum 4 clips.")
+    if text_position not in ("top", "center", "bottom"):
+        text_position = "bottom"
+
+    crf     = CRF_MAP.get(quality, 18)
+    job_id  = uuid.uuid4().hex
+    job_dir = f"{TMP_DIR}/{job_id}"
+    os.makedirs(job_dir)
+
+    try:
+        # Save uploaded clips to disk
+        clip_inputs: list[ClipInput] = []
+        for i, upload in enumerate(clips):
+            ext  = os.path.splitext(upload.filename or "clip")[1] or ".mp4"
+            dest = f"{job_dir}/upload_{i}{ext}"
+            with open(dest, "wb") as f:
+                f.write(await upload.read())
+            clip_inputs.append(ClipInput(url=dest))   # local path — no HTTP download needed
+
+        # Save music if provided
+        music_path: Optional[str] = None
+        if music and music.filename:
+            ext        = os.path.splitext(music.filename)[1] or ".mp3"
+            music_path = f"{job_dir}/music{ext}"
+            with open(music_path, "wb") as f:
+                f.write(await music.read())
+
+        # Stitch clips (reuse helper but pass local paths directly)
+        stitched = _normalize_clips_from_paths(
+            [(ci.url, None, None) for ci in clip_inputs], job_dir, crf
+        )
+        frame_b64 = _extract_frame(stitched, job_dir)
+
+        # Apply overlay
+        spec   = _resolve_template(template)
+        output = _apply_overlay(stitched, job_dir, crf, spec, hook_text, text_position, music_path)
+
+        background_tasks.add_task(shutil.rmtree, job_dir, True)
+        return FileResponse(
+            output,
+            media_type="video/mp4",
+            filename=f"test_reel_{job_id[:8]}.mp4",
+            headers={"X-Frame-B64-Length": str(len(frame_b64))},
+        )
+
+    except HTTPException:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
+    except Exception as exc:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class StitchRequest(BaseModel):
+    clips:   list[Union[ClipInput, str]]
+    quality: Optional[str] = "high"
+
+
+class OverlayRequest(BaseModel):
+    video_id:      str
+    main_text:     Optional[str] = ""
+    text_position: Optional[str] = "bottom"
+    template:      Optional[Union[TemplateSpec, str]] = None
+    music_url:     Optional[str] = None
+    quality:       Optional[str] = "high"
+
+
+def _normalize_clips_from_paths(
+    clip_paths: list[tuple[str, Optional[float], Optional[float]]],
+    job_dir: str,
+    crf: int,
+) -> str:
+    """Normalize already-on-disk clips (no HTTP download). Used by /test-render."""
+    normalized: list[str] = []
+    for i, (clip, start, end) in enumerate(clip_paths):
+        out = f"{job_dir}/norm_{i}.mp4"
+        cmd = ["ffmpeg", "-y"]
+        if start is not None:
+            cmd += ["-ss", str(start)]
+        if end is not None:
+            cmd += ["-to", str(end)]
+        cmd += [
+            "-i", clip,
+            "-vf", (
+                "scale=1080:1920:force_original_aspect_ratio=decrease,"
+                "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
+                "format=yuv420p"
+            ),
+            "-c:v", "libx264", "-crf", str(crf),
+            "-preset", "fast",
+            "-c:a", "aac", "-b:a", "192k",
+            "-r", "30",
+            out,
+        ]
+        _run(cmd, f"Normalize clip {i}")
+        normalized.append(out)
+
+    if len(normalized) == 1:
+        return normalized[0]
+
+    list_file = f"{job_dir}/concat.txt"
+    with open(list_file, "w") as f:
+        for p in normalized:
+            f.write(f"file '{p}'\n")
+    stitched = f"{job_dir}/stitched.mp4"
+    _run([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", list_file, "-c", "copy", stitched,
+    ], "Concat")
+    return stitched
+
+
+def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int) -> str:
+    """Download, trim, normalize all clips to 1080x1920 and concatenate. Returns stitched path."""
+    clip_paths: list[tuple[str, Optional[float], Optional[float]]] = []
+    for i, ci in enumerate(clip_inputs):
+        dest = f"{job_dir}/clip_{i}.mp4"
+        # sync download — called from async context via run_in_executor or directly
+        with httpx.Client(timeout=180, follow_redirects=True) as client:
+            r = client.get(ci.url)
+            r.raise_for_status()
+            with open(dest, "wb") as f:
+                f.write(r.content)
+        clip_paths.append((dest, ci.start, ci.end))
+
+    normalized: list[str] = []
+    for i, (clip, start, end) in enumerate(clip_paths):
+        out = f"{job_dir}/norm_{i}.mp4"
+        cmd = ["ffmpeg", "-y"]
+        if start is not None:
+            cmd += ["-ss", str(start)]
+        if end is not None:
+            cmd += ["-to", str(end)]
+        cmd += [
+            "-i", clip,
+            "-vf", (
+                "scale=1080:1920:force_original_aspect_ratio=decrease,"
+                "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
+                "format=yuv420p"
+            ),
+            "-c:v", "libx264", "-crf", str(crf),
+            "-preset", "fast",
+            "-c:a", "aac", "-b:a", "192k",
+            "-r", "30",
+            out,
+        ]
+        _run(cmd, f"Normalize clip {i}")
+        normalized.append(out)
+
+    if len(normalized) == 1:
+        return normalized[0]
+
+    list_file = f"{job_dir}/concat.txt"
+    with open(list_file, "w") as f:
+        for p in normalized:
+            f.write(f"file '{p}'\n")
+    stitched = f"{job_dir}/stitched.mp4"
+    _run([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", list_file, "-c", "copy", stitched,
+    ], "Concat")
+    return stitched
+
+
+def _extract_frame(stitched: str, job_dir: str) -> str:
+    """Extract one frame from the middle of the stitched video. Returns base64 JPEG string."""
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", stitched],
+        capture_output=True, text=True,
+    )
+    try:
+        duration = float(probe.stdout.strip())
+    except (ValueError, TypeError):
+        duration = 10.0
+
+    seek = max(0.5, duration / 2)
+    frame_path = f"{job_dir}/frame.jpg"
+    _run([
+        "ffmpeg", "-y",
+        "-ss", str(seek),
+        "-i", stitched,
+        "-vframes", "1",
+        "-q:v", "2",
+        frame_path,
+    ], "Extract frame")
+
+    with open(frame_path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+
+def _apply_overlay(stitched: str, job_dir: str, crf: int,
+                   spec: dict, main_text: str, position: str,
+                   music_url: Optional[str]) -> str:
+    """Apply text overlay (and optional music) to stitched video. Returns output path."""
+    output = f"{job_dir}/output.mp4"
+    vf     = _build_vf_filters(spec, main_text, position, has_music=bool(music_url))
+
+    if music_url:
+        music_path = f"{job_dir}/music.mp3"
+        with httpx.Client(timeout=180, follow_redirects=True) as client:
+            r = client.get(music_url)
+            r.raise_for_status()
+            with open(music_path, "wb") as f:
+                f.write(r.content)
+
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", stitched],
+            capture_output=True, text=True,
+        )
+        has_audio = "audio" in probe.stdout
+        audio_filter = (
+            "[1:a]volume=0.25[music];[0:a][music]amix=inputs=2:duration=first:dropout_transition=3[a]"
+            if has_audio else
+            "[1:a]volume=0.25[a]"
+        )
+        _run([
+            "ffmpeg", "-y",
+            "-i", stitched, "-i", music_path,
+            "-filter_complex", f"[0:v]{vf}[v];{audio_filter}",
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+            "-shortest", output,
+        ], "Overlay + music")
+    else:
+        _run([
+            "ffmpeg", "-y", "-i", stitched,
+            "-vf", vf,
+            "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
+            "-pix_fmt", "yuv420p", "-c:a", "copy",
+            output,
+        ], "Text overlay")
+
+    return output
+
+
+def _cleanup_stale_store() -> None:
+    """Remove stitch store entries older than TTL."""
+    cutoff = time.time() - STITCH_TTL_S
+    stale  = [vid for vid, s in STITCH_STORE.items() if s["created_at"] < cutoff]
+    for vid in stale:
+        entry = STITCH_STORE.pop(vid, None)
+        if entry:
+            shutil.rmtree(entry["dir"], ignore_errors=True)
+
+
+@app.post("/stitch")
+async def stitch(req: StitchRequest):
+    """
+    Step 1 of 2: Download + normalize + concatenate clips, extract mid-point frame.
+    Returns video_id (reference for /overlay) and frame_b64 (for image_analyzer).
+    """
+    _cleanup_stale_store()
+
+    if not req.clips:
+        raise HTTPException(status_code=400, detail="No clips provided")
+
+    clip_inputs = [ClipInput(url=c) if isinstance(c, str) else c for c in req.clips]
+    crf     = CRF_MAP.get(req.quality or "high", 18)
+    job_id  = uuid.uuid4().hex
+    job_dir = f"{TMP_DIR}/{job_id}"
+    os.makedirs(job_dir)
+
+    try:
+        stitched  = _normalize_clips(clip_inputs, job_dir, crf)
+        frame_b64 = _extract_frame(stitched, job_dir)
+
+        STITCH_STORE[job_id] = {
+            "dir":        job_dir,
+            "stitched":   stitched,
+            "crf":        crf,
+            "created_at": time.time(),
+        }
+        return {"video_id": job_id, "frame_b64": frame_b64}
+
+    except HTTPException:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
+    except Exception as exc:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/overlay")
+async def overlay(req: OverlayRequest, background_tasks: BackgroundTasks):
+    """
+    Step 2 of 2: Apply text + template + music to the stitched video from /stitch.
+    Returns the final rendered video (mp4).
+    """
+    _cleanup_stale_store()
+
+    entry = STITCH_STORE.get(req.video_id)
+    if not entry:
+        raise HTTPException(
+            status_code=404,
+            detail=f"video_id {req.video_id!r} not found or expired. Call /stitch first.",
+        )
+
+    job_dir  = entry["dir"]
+    stitched = entry["stitched"]
+    crf      = entry["crf"]
+
+    spec     = _resolve_template(req.template)
+    position = req.text_position or "bottom"
+    if position not in ("top", "center", "bottom"):
+        position = "bottom"
+
+    try:
+        output = _apply_overlay(stitched, job_dir, crf, spec,
+                                req.main_text or "", position, req.music_url)
+
+        STITCH_STORE.pop(req.video_id, None)
+        background_tasks.add_task(shutil.rmtree, job_dir, True)
+        return FileResponse(output, media_type="video/mp4",
+                            filename=f"reel_{req.video_id[:8]}.mp4")
+
+    except HTTPException:
+        STITCH_STORE.pop(req.video_id, None)
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
+    except Exception as exc:
+        STITCH_STORE.pop(req.video_id, None)
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/render")
