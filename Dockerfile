@@ -1,7 +1,9 @@
 FROM python:3.11-slim
 
+# System deps: FFmpeg (static), fontconfig for fc-cache, liberation fonts as fallback
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget xz-utils ca-certificates \
+    fontconfig \
     fonts-liberation fonts-noto \
     && wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
     && tar xf ffmpeg-release-amd64-static.tar.xz \
@@ -15,6 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy font downloader and run it during build
+# This downloads all 20 Google Fonts used by ReelForge templates
+COPY download_fonts.py .
+RUN python download_fonts.py
+
 COPY . .
 
 EXPOSE 8080
