@@ -32,6 +32,15 @@ FONTS = [
     ("Montserrat:wght@700",                      "Montserrat-Bold"),
     ("Spectral:wght@300",                        "Spectral-Light"),
     ("Playfair+Display:ital,wght@1,700",         "PlayfairDisplay-BoldItalic"),
+    # ── 8 new templates (21-28) ────────────────────────────────────────────────
+    ("Great+Vibes:wght@400",                     "GreatVibes-Regular"),
+    ("Dancing+Script:wght@700",                  "DancingScript-Bold"),
+    ("Playfair+Display:wght@900",               "PlayfairDisplay-Black"),   # Heritage template
+    ("Italiana:wght@400",                        "Italiana-Regular"),
+    ("Anton:wght@400",                           "Anton-Regular"),
+    ("Pacifico:wght@400",                        "Pacifico-Regular"),
+    ("Unbounded:wght@700",                       "Unbounded-Bold"),
+    ("Noto+Serif:ital,wght@1,400",              "NotoSerif-Italic"),
 ]
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"

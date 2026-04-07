@@ -14,7 +14,7 @@ import uuid
 from typing import Optional, Union
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -25,8 +25,10 @@ app = FastAPI(title="ReelForge FFmpeg Service")
 STITCH_STORE: dict[str, dict] = {}
 STITCH_TTL_S = 1800  # 30 minutes — auto-expire if /overlay never called
 
-FONT_DIR = "/usr/local/share/fonts/google"
-TMP_DIR  = "/tmp/reelforge"
+FONT_DIR   = "/usr/local/share/fonts/google"
+TMP_DIR    = "/tmp/reelforge"
+FFMPEG_BIN  = os.getenv("FFMPEG_BIN",  "ffmpeg")   # override for local macOS: /tmp/ffmpeg
+FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")  # override for local macOS: /tmp/ffprobe
 os.makedirs(TMP_DIR, exist_ok=True)
 
 CRF_MAP = {"high": 18, "medium": 23, "low": 28}
@@ -53,10 +55,29 @@ FONT_FILES: dict[str, str] = {
     "Montserrat":          f"{FONT_DIR}/Montserrat-Bold.ttf",
     "Spectral":            f"{FONT_DIR}/Spectral-Light.ttf",
     "Playfair Display":    f"{FONT_DIR}/PlayfairDisplay-BoldItalic.ttf",
+    # ── New fonts for templates 21-28 ─────────────────────────────────────────
+    "Great Vibes":         f"{FONT_DIR}/GreatVibes-Regular.ttf",
+    "Dancing Script":      f"{FONT_DIR}/DancingScript-Bold.ttf",
+    "Italiana":            f"{FONT_DIR}/Italiana-Regular.ttf",
+    "Anton":               f"{FONT_DIR}/Anton-Regular.ttf",
+    "Pacifico":            f"{FONT_DIR}/Pacifico-Regular.ttf",
+    "Unbounded":           f"{FONT_DIR}/Unbounded-Bold.ttf",
+    "Noto Serif":          f"{FONT_DIR}/NotoSerif-Italic.ttf",
+    # Heritage uses Playfair Display 900 — resolve to nearest available weight
+    "Playfair Display Black": f"{FONT_DIR}/PlayfairDisplay-Black.ttf",
 }
 
-# Fallback font in case a Google Font didn't download
-FALLBACK_FONT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+# Fallback font — checked in order, first one that exists wins
+_FALLBACK_CANDIDATES = [
+    "/usr/local/share/fonts/google/Oswald-Bold.ttf",                     # EasyPanel (downloaded)
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",      # Linux
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",              # Linux (Ubuntu/Debian)
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",                 # macOS
+    "/Library/Fonts/Arial Bold.ttf",                                     # macOS (Office)
+    "/System/Library/Fonts/Helvetica.ttc",                               # macOS (always present)
+    "/System/Library/Fonts/Arial.ttf",                                   # macOS
+]
+FALLBACK_FONT = next((p for p in _FALLBACK_CANDIDATES if os.path.exists(p)), "")
 
 # Legacy template presets (for backward-compat when template is sent as a string ID)
 LEGACY_TEMPLATES: dict[str, dict] = {
@@ -80,6 +101,15 @@ LEGACY_TEMPLATES: dict[str, dict] = {
     "singapore":  {"font": "Montserrat",         "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 16, "text_color": "#ffffff", "subtitle": "montserrat",      "accent_color": "#e879f9", "overlay": "rgba(80,0,100,0.68)"},
     "mumbai":     {"font": "Spectral",           "font_weight": 300, "italic": True,  "text_case": "none",  "font_size": 28, "text_color": "#FFD700", "subtitle": "spectral",        "accent_color": "#fb923c", "overlay": "rgba(120,60,0,0.54)"},
     "vienna":     {"font": "Playfair Display",   "font_weight": 700, "italic": True,  "text_case": "none",  "font_size": 26, "text_color": "#f8e1f4", "subtitle": "playfair display","accent_color": "#e879f9", "overlay": "rgba(25,5,45,0.68)"},
+    # ── Templates 21-28 ───────────────────────────────────────────────────────
+    "coastal":    {"font": "Great Vibes",        "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 30, "text_color": "#fff8f0", "subtitle": "golden hour",    "accent_color": "#fbbf24", "overlay": "rgba(80,30,0,0.45)"},
+    "capri":      {"font": "Dancing Script",     "font_weight": 700, "italic": False, "text_case": "none",  "font_size": 28, "text_color": "#e0f2fe", "subtitle": "la dolce vita",  "accent_color": "#7dd3fc", "overlay": "rgba(5,50,90,0.50)"},
+    "heritage":   {"font": "Playfair Display",   "font_weight": 900, "italic": False, "text_case": "upper", "font_size": 20, "text_color": "#d4a96a", "subtitle": "old money",      "accent_color": "#d4a96a", "overlay": "rgba(0,0,0,0.68)"},
+    "editorial":  {"font": "Italiana",           "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 32, "text_color": "#ffffff", "subtitle": "fashion week",   "accent_color": "#f3f4f6", "overlay": "rgba(0,0,0,0.62)"},
+    "noir":       {"font": "Anton",              "font_weight": 400, "italic": False, "text_case": "upper", "font_size": 28, "text_color": "#ffffff", "subtitle": "cinematic",      "accent_color": "#ffffff", "overlay": "rgba(0,0,0,0.80)"},
+    "eden":       {"font": "Pacifico",           "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 22, "text_color": "#dcfce7", "subtitle": "in bloom",       "accent_color": "#4ade80", "overlay": "rgba(5,50,20,0.58)"},
+    "monaco":     {"font": "Unbounded",          "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 16, "text_color": "#93c5fd", "subtitle": "prestige",       "accent_color": "#3b82f6", "overlay": "rgba(0,20,60,0.72)"},
+    "bloom":      {"font": "Noto Serif",         "font_weight": 400, "italic": True,  "text_case": "lower", "font_size": 28, "text_color": "#fff0f5", "subtitle": "in full bloom",  "accent_color": "#fb7185", "overlay": "rgba(200,50,80,0.35)"},
 }
 
 
@@ -133,11 +163,16 @@ def _resolve_template(template: Optional[Union[TemplateSpec, str]]) -> dict:
 
 
 def _resolve_font(font_name: str) -> str:
-    """Return path to downloaded Google Font, falling back to Liberation."""
+    """Return path to a font file — Google Font first, then system fallback."""
     path = FONT_FILES.get(font_name or "Oswald", FALLBACK_FONT)
     if os.path.exists(path):
         return path
-    return FALLBACK_FONT
+    if FALLBACK_FONT and os.path.exists(FALLBACK_FONT):
+        return FALLBACK_FONT
+    raise RuntimeError(
+        "No font file found. On macOS run: brew install --cask font-oswald  "
+        "or install any TTF font and set FALLBACK_FONT."
+    )
 
 
 def _hex_to_rgba(hex_color: str, alpha: float = 1.0) -> str:
@@ -184,35 +219,6 @@ def _escape_drawtext(text: str) -> str:
     )
 
 
-def _y_expr(position: str, zone: str = "main") -> str:
-    """
-    Calculate y position for drawtext/drawbox.
-    zone: 'main' | 'divider' | 'subtitle'
-    All values are concrete pixel offsets — no drawtext variables in drawbox exprs.
-    """
-    if position == "top":
-        if zone == "main":
-            return "80"
-        if zone == "divider":
-            return "210"
-        if zone == "subtitle":
-            return "230"
-    if position == "center":
-        if zone == "main":
-            return "(h-text_h)/2-40"
-        if zone == "divider":
-            return "h/2+30"
-        if zone == "subtitle":
-            return "h/2+50"
-    # default: bottom
-    if zone == "main":
-        return "h-200"
-    if zone == "divider":
-        return "h-118"
-    if zone == "subtitle":
-        return "h-100"
-    return "h-200"
-
 
 def _build_vf_filters(
     spec: dict,
@@ -223,73 +229,95 @@ def _build_vf_filters(
     """
     Build the full -vf filter chain:
       1. scale/pad to 1080x1920
-      2. semi-transparent overlay rectangle
-      3. main text (drawtext)
-      4. accent divider (drawbox)
-      5. subtitle (drawtext)
+      2. main hook text with stroke + shadow (no background band)
+      3. thin accent divider line
+      4. subtitle text (smaller, softer)
     """
     font_path  = _resolve_font(spec.get("font", "Oswald"))
     font_size  = spec.get("font_size", 28)
     text_color = spec.get("text_color", "#ffffff")
     accent_col = spec.get("accent_color", "#ffffff")
     subtitle   = spec.get("subtitle", "")
-    overlay    = spec.get("overlay", "rgba(0,0,0,0.4)")
-    text_case  = spec.get("text_case", "upper")
 
-    main_safe = _escape_drawtext(_apply_text_case(main_text or "", text_case))
-    sub_safe  = _escape_drawtext(_apply_text_case(subtitle or "", text_case))
+    # Always sentence case — never ALL CAPS from template
+    main_safe = _escape_drawtext(main_text or "")
+    sub_safe  = _escape_drawtext(subtitle or "")
 
-    # Scale + pad (normalize to 1080x1920)
+    # Scale + pad
     scale_pad = (
         "scale=1080:1920:force_original_aspect_ratio=decrease,"
         "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
         "format=yuv420p"
     )
 
-    # Overlay tint rectangle
-    ov_r, ov_g, ov_b = _parse_overlay_rgb(overlay)
-    ov_a = _parse_overlay_alpha(overlay)
-    overlay_filter = (
-        f"drawbox=x=0:y=0:w=iw:h=ih:"
-        f"color=#{ov_r:02X}{ov_g:02X}{ov_b:02X}@{ov_a:.2f}:"
-        "thickness=fill"
-    )
+    VIDEO_H = 1920
+    VIDEO_W = 1080
 
-    # Main text
-    tc_ffmpeg   = _hex_to_rgba(text_color)
-    main_y      = _y_expr(position, "main")
+    # ── Font size ─────────────────────────────────────────────────────────────
+    # Target 50-58px on 1080px wide — readable but not overwhelming.
+    # (Research: 45-65px optimal for fashion reels, 10 words max per line)
+    vid_font_size = max(min(int(font_size * 1.85), 58), 48)
+
+    # ── Vertical placement ────────────────────────────────────────────────────
+    # Bottom safe zone: 280px from bottom (clears Instagram action bar + likes/comments).
+    # Top safe zone: 120px (clears profile row).
+    sub_size     = max(int(vid_font_size * 0.50), 26)
+    text_block_h = vid_font_size + sub_size + 28   # hook + gap + subtitle
+
+    if position == "top":
+        main_y_px = 120
+    elif position == "center":
+        main_y_px = (VIDEO_H - text_block_h) // 2
+    else:  # bottom — 280px clear from very bottom edge
+        main_y_px = VIDEO_H - text_block_h - 280
+
+    div_y_px = main_y_px + vid_font_size + 10
+    sub_y_px = main_y_px + vid_font_size + 22
+
+    # ── Readability: stroke + shadow (no band) ────────────────────────────────
+    # Pro fashion brands use text stroke + drop shadow for clean floating text.
+    # Opposite-colour stroke ensures legibility on any background.
+    tc_ffmpeg = _hex_to_rgba(text_color)
+    is_dark_text = int(text_color.strip().lstrip("#")[:2] or "ff", 16) < 0x88
+    border_color  = "white@0.65" if is_dark_text else "black@0.65"
+    shadow_color  = "white@0.50" if is_dark_text else "black@0.50"
+
+    # Main hook text — stroke + shadow, centered, no background
     main_filter = (
         f"drawtext=fontfile='{font_path}'"
         f":text='{main_safe}'"
-        f":fontsize={font_size * 3}"       # scale up: spec font_size is CSS px, video is 1080px wide
+        f":fontsize={vid_font_size}"
         f":fontcolor={tc_ffmpeg}"
         ":x=(w-text_w)/2"
-        f":y={main_y}"
-        ":shadowcolor=black@0.6"
+        f":y={main_y_px}"
+        f":borderw=2:bordercolor={border_color}"
+        f":shadowcolor={shadow_color}"
         ":shadowx=3:shadowy=3"
-        ":line_spacing=8"
+        ":line_spacing=4"
     )
 
-    # Accent divider + subtitle (only if subtitle text exists)
+    # Thin accent divider + subtitle (no background, stroke for readability)
     extra_filters = ""
     if subtitle:
-        ac_ffmpeg  = _hex_to_rgba(accent_col)
-        div_y      = _y_expr(position, "divider")
-        sub_y      = _y_expr(position, "subtitle")
-        sub_size   = max(int(font_size * 1.5), 32)
+        ac_ffmpeg     = _hex_to_rgba(accent_col)
+        ac_ffmpeg_sub = _hex_to_rgba(accent_col, 0.92)
+        div_x         = (VIDEO_W - 160) // 2
 
         extra_filters = (
-            f",drawbox=x=(iw-300)/2:y={div_y}:w=300:h=3:color={ac_ffmpeg}:thickness=fill"
+            f",drawbox=x={div_x}:y={div_y_px}:w=160:h=2:color={ac_ffmpeg}:thickness=fill"
             f",drawtext=fontfile='{font_path}'"
             f":text='{sub_safe}'"
             f":fontsize={sub_size}"
-            f":fontcolor={ac_ffmpeg}@0.85"
+            f":fontcolor={ac_ffmpeg_sub}"
             ":x=(w-text_w)/2"
-            f":y={sub_y}"
-            ":line_spacing=6"
+            f":y={sub_y_px}"
+            f":borderw=1:bordercolor={border_color}"
+            f":shadowcolor={shadow_color}"
+            ":shadowx=2:shadowy=2"
+            ":line_spacing=4"
         )
 
-    return f"{scale_pad},{overlay_filter},{main_filter}{extra_filters}"
+    return f"{scale_pad},{main_filter}{extra_filters}"
 
 
 async def _download(url: str, dest: str) -> None:
@@ -323,7 +351,7 @@ def health():
 
 @app.get("/ffmpeg-version")
 def ffmpeg_version():
-    r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True)
+    r = subprocess.run([FFMPEG_BIN, "-version"], capture_output=True, text=True)
     return {"version": r.stdout.split("\n")[0]}
 
 
@@ -332,16 +360,57 @@ def list_templates():
     return {"templates": list(LEGACY_TEMPLATES.keys())}
 
 
+# ── Frame extraction endpoint (used by /reelforge/local-test on backend) ─────────
+
+@app.post("/frame")
+async def extract_frame_endpoint(
+    clips: list[UploadFile] = File(...),
+):
+    """Save uploaded clips, stitch them, extract mid-point frame. Returns {frame_b64}."""
+    if not clips:
+        raise HTTPException(status_code=400, detail="At least one clip is required.")
+
+    job_id  = uuid.uuid4().hex
+    job_dir = f"{TMP_DIR}/{job_id}"
+    os.makedirs(job_dir)
+
+    try:
+        clip_inputs = []
+        for i, upload in enumerate(clips):
+            ext  = os.path.splitext(upload.filename or "clip")[1] or ".mp4"
+            dest = f"{job_dir}/upload_{i}{ext}"
+            with open(dest, "wb") as f:
+                f.write(await upload.read())
+            clip_inputs.append(dest)
+
+        stitched  = _normalize_clips_from_paths([(p, None, None) for p in clip_inputs], job_dir, CRF_MAP["high"])
+        frame_b64 = _extract_frame(stitched, job_dir)
+
+        return {"frame_b64": frame_b64}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        import threading
+        threading.Timer(30, lambda: shutil.rmtree(job_dir, ignore_errors=True)).start()
+
+
 # ── Local / EasyPanel test endpoint (no Google Drive needed) ─────────────────────
 
 @app.post("/test-render")
 async def test_render(
     background_tasks: BackgroundTasks,
     clips:         list[UploadFile] = File(...),
-    hook_text:     str              = "Elevate Your Style",
-    template:      str              = "milan",
-    text_position: str              = "bottom",
-    quality:       str              = "high",
+    hook_text:     str              = Form("Elevate Your Style"),
+    subtitle:      str              = Form(""),        # AI-generated subtitle overrides template default
+    template:      str              = Form("milan"),
+    text_position: str              = Form("bottom"),
+    quality:       str              = Form("high"),
+    # Adaptive colors from image_analyzer (optional — override template colors)
+    text_color:    str              = Form(""),        # e.g. "#111111" for bright footage
+    band_rgba:     str              = Form(""),        # e.g. "rgba(255,255,255,0.55)"
+    accent_color:  str              = Form(""),        # e.g. "#333333"
     music:         Optional[UploadFile] = File(None),
 ):
     """
@@ -402,8 +471,19 @@ async def test_render(
         )
         frame_b64 = _extract_frame(stitched, job_dir)
 
-        # Apply overlay
-        spec   = _resolve_template(template)
+        # Apply overlay — AI colors + subtitle override the template's hardcoded defaults
+        spec = _resolve_template(template)
+        overrides: dict = {}
+        if subtitle:
+            overrides["subtitle"] = subtitle
+        if text_color:
+            overrides["text_color"] = text_color
+        if band_rgba:
+            overrides["overlay"] = band_rgba
+        if accent_color:
+            overrides["accent_color"] = accent_color
+        if overrides:
+            spec = {**spec, **overrides}
         output = _apply_overlay(stitched, job_dir, crf, spec, hook_text, text_position, music_path)
 
         background_tasks.add_task(shutil.rmtree, job_dir, True)
@@ -434,6 +514,11 @@ class OverlayRequest(BaseModel):
     template:      Optional[Union[TemplateSpec, str]] = None
     music_url:     Optional[str] = None
     quality:       Optional[str] = "high"
+    # Adaptive colors from image_analyzer
+    subtitle:      Optional[str] = None
+    text_color:    Optional[str] = None   # e.g. "#111111"
+    band_rgba:     Optional[str] = None   # e.g. "rgba(255,255,255,0.55)"
+    accent_color:  Optional[str] = None   # e.g. "#333333"
 
 
 def _normalize_clips_from_paths(
@@ -445,7 +530,7 @@ def _normalize_clips_from_paths(
     normalized: list[str] = []
     for i, (clip, start, end) in enumerate(clip_paths):
         out = f"{job_dir}/norm_{i}.mp4"
-        cmd = ["ffmpeg", "-y"]
+        cmd = [FFMPEG_BIN, "-y"]
         if start is not None:
             cmd += ["-ss", str(start)]
         if end is not None:
@@ -475,7 +560,7 @@ def _normalize_clips_from_paths(
             f.write(f"file '{p}'\n")
     stitched = f"{job_dir}/stitched.mp4"
     _run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
         "-i", list_file, "-c", "copy", stitched,
     ], "Concat")
     return stitched
@@ -497,7 +582,7 @@ def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int) -> st
     normalized: list[str] = []
     for i, (clip, start, end) in enumerate(clip_paths):
         out = f"{job_dir}/norm_{i}.mp4"
-        cmd = ["ffmpeg", "-y"]
+        cmd = [FFMPEG_BIN, "-y"]
         if start is not None:
             cmd += ["-ss", str(start)]
         if end is not None:
@@ -527,7 +612,7 @@ def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int) -> st
             f.write(f"file '{p}'\n")
     stitched = f"{job_dir}/stitched.mp4"
     _run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
         "-i", list_file, "-c", "copy", stitched,
     ], "Concat")
     return stitched
@@ -536,7 +621,7 @@ def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int) -> st
 def _extract_frame(stitched: str, job_dir: str) -> str:
     """Extract one frame from the middle of the stitched video. Returns base64 JPEG string."""
     probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+        [FFPROBE_BIN, "-v", "error", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", stitched],
         capture_output=True, text=True,
     )
@@ -548,7 +633,7 @@ def _extract_frame(stitched: str, job_dir: str) -> str:
     seek = max(0.5, duration / 2)
     frame_path = f"{job_dir}/frame.jpg"
     _run([
-        "ffmpeg", "-y",
+        FFMPEG_BIN, "-y",
         "-ss", str(seek),
         "-i", stitched,
         "-vframes", "1",
@@ -576,7 +661,7 @@ def _apply_overlay(stitched: str, job_dir: str, crf: int,
                 f.write(r.content)
 
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a",
+            [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
              "-show_entries", "stream=codec_type", "-of", "csv=p=0", stitched],
             capture_output=True, text=True,
         )
@@ -587,7 +672,7 @@ def _apply_overlay(stitched: str, job_dir: str, crf: int,
             "[1:a]volume=0.25[a]"
         )
         _run([
-            "ffmpeg", "-y",
+            FFMPEG_BIN, "-y",
             "-i", stitched, "-i", music_path,
             "-filter_complex", f"[0:v]{vf}[v];{audio_filter}",
             "-map", "[v]", "-map", "[a]",
@@ -597,7 +682,7 @@ def _apply_overlay(stitched: str, job_dir: str, crf: int,
         ], "Overlay + music")
     else:
         _run([
-            "ffmpeg", "-y", "-i", stitched,
+            FFMPEG_BIN, "-y", "-i", stitched,
             "-vf", vf,
             "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
             "-pix_fmt", "yuv420p", "-c:a", "copy",
@@ -678,6 +763,19 @@ async def overlay(req: OverlayRequest, background_tasks: BackgroundTasks):
     if position not in ("top", "center", "bottom"):
         position = "bottom"
 
+    # Apply adaptive color overrides from image_analyzer
+    ov_overrides: dict = {}
+    if req.subtitle:
+        ov_overrides["subtitle"] = req.subtitle
+    if req.text_color:
+        ov_overrides["text_color"] = req.text_color
+    if req.band_rgba:
+        ov_overrides["overlay"] = req.band_rgba
+    if req.accent_color:
+        ov_overrides["accent_color"] = req.accent_color
+    if ov_overrides:
+        spec = {**spec, **ov_overrides}
+
     try:
         output = _apply_overlay(stitched, job_dir, crf, spec,
                                 req.main_text or "", position, req.music_url)
@@ -738,7 +836,7 @@ async def render(req: RenderRequest, background_tasks: BackgroundTasks):
         normalized: list[str] = []
         for i, (clip, start, end) in enumerate(clip_paths):
             out = f"{job_dir}/norm_{i}.mp4"
-            cmd = ["ffmpeg", "-y"]
+            cmd = [FFMPEG_BIN, "-y"]
 
             # Trim inputs
             if start is not None:
@@ -772,7 +870,7 @@ async def render(req: RenderRequest, background_tasks: BackgroundTasks):
                     f.write(f"file '{p}'\n")
             concat_out = f"{job_dir}/concat.mp4"
             _run([
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
                 "-i", list_file,
                 "-c", "copy",
                 concat_out,
@@ -792,7 +890,7 @@ async def render(req: RenderRequest, background_tasks: BackgroundTasks):
         if music_path:
             # Check if concat_out has an audio stream
             probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "a",
+                [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
                  "-show_entries", "stream=codec_type", "-of", "csv=p=0", concat_out],
                 capture_output=True, text=True,
             )
@@ -808,7 +906,7 @@ async def render(req: RenderRequest, background_tasks: BackgroundTasks):
                 audio_filter = "[1:a]volume=0.25[a]"
 
             _run([
-                "ffmpeg", "-y",
+                FFMPEG_BIN, "-y",
                 "-i", concat_out,
                 "-i", music_path,
                 "-filter_complex",
@@ -823,7 +921,7 @@ async def render(req: RenderRequest, background_tasks: BackgroundTasks):
             ], "Overlay + music")
         else:
             _run([
-                "ffmpeg", "-y", "-i", concat_out,
+                FFMPEG_BIN, "-y", "-i", concat_out,
                 "-vf", vf,
                 "-c:v", "libx264", "-crf", str(crf),
                 "-preset", "slow",
