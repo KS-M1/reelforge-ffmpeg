@@ -1,17 +1,11 @@
 FROM python:3.11-slim
 
-# System deps: FFmpeg (static), fontconfig for fc-cache, liberation fonts as fallback
+# System deps: FFmpeg with full filter support (drawtext, libfreetype, fontconfig)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget xz-utils ca-certificates \
+    ffmpeg \
     fontconfig \
     fonts-liberation fonts-noto \
-    && wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
-    && tar xf ffmpeg-release-amd64-static.tar.xz \
-    && mv ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg \
-    && mv ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe \
-    && rm -rf ffmpeg-*.tar.xz ffmpeg-*-amd64-static \
-    && apt-get purge -y wget xz-utils \
-    && apt-get autoremove -y \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
