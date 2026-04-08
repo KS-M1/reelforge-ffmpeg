@@ -616,6 +616,7 @@ class OverlayRequest(BaseModel):
     text_position: Optional[str] = "bottom"
     template:      Optional[Union[TemplateSpec, str]] = None
     music_url:     Optional[str] = None
+    music_headers: Optional[dict] = None
     quality:       Optional[str] = "high"
     # Adaptive colors from image_analyzer
     subtitle:      Optional[str] = None
@@ -828,7 +829,8 @@ def _extract_frame(stitched: str, job_dir: str) -> str:
 def _apply_overlay(stitched: str, job_dir: str, crf: int,
                    spec: dict, main_text: str, position: str,
                    music_url: Optional[str],
-                   effects: Optional[EffectsConfig] = None) -> str:
+                   effects: Optional[EffectsConfig] = None,
+                   music_headers: Optional[dict] = None) -> str:
     """Apply text overlay (and optional music) to stitched video. Returns output path."""
     output = f"{job_dir}/output.mp4"
     vf     = _build_vf_filters(spec, main_text, position, has_music=bool(music_url), effects=effects)
@@ -836,7 +838,7 @@ def _apply_overlay(stitched: str, job_dir: str, crf: int,
     if music_url:
         music_path = f"{job_dir}/music.mp3"
         with httpx.Client(timeout=180, follow_redirects=True) as client:
-            r = client.get(music_url)
+            r = client.get(music_url, headers=music_headers or {})
             r.raise_for_status()
             with open(music_path, "wb") as f:
                 f.write(r.content)
@@ -961,7 +963,7 @@ async def overlay(req: OverlayRequest, background_tasks: BackgroundTasks):
     try:
         output = _apply_overlay(stitched, job_dir, crf, spec,
                                 req.main_text or "", position, req.music_url,
-                                effects=req.effects)
+                                effects=req.effects, music_headers=req.music_headers)
 
         STITCH_STORE.pop(req.video_id, None)
         background_tasks.add_task(shutil.rmtree, job_dir, True)
