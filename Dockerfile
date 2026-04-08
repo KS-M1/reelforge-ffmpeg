@@ -19,7 +19,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy font downloader and run it during build
-# This downloads all 20 Google Fonts used by ReelForge templates
+# This downloads all 28 Google Fonts used by ReelForge templates
 COPY download_fonts.py .
 RUN python download_fonts.py
 

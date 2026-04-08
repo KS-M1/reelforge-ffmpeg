@@ -145,24 +145,6 @@ class EffectsConfig(BaseModel):
     transition_type:      Optional[str]  = "none"   # none | dissolve | fade | circleopen | pixelize
 
 
-class RenderRequest(BaseModel):
-    # Clips: accept both new {url,start,end} objects and legacy plain strings
-    clips: list[Union[ClipInput, str]]
-    # Text: new field is main_text, legacy is text
-    main_text: Optional[str] = None
-    text: Optional[str] = None          # legacy compat
-    # Template: accept full spec dict or legacy string ID
-    template: Optional[Union[TemplateSpec, str]] = None
-    # Text position: top | center | bottom
-    text_position: Optional[str] = "bottom"
-    # Music overlay
-    music_url: Optional[str] = None
-    # Quality
-    quality: Optional[str] = "high"
-    # Visual effects
-    effects: Optional[EffectsConfig] = None
-
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _resolve_template(template: Optional[Union[TemplateSpec, str]]) -> dict:
@@ -515,6 +497,7 @@ async def test_render(
     text_color:    str              = Form(""),        # e.g. "#111111" for bright footage
     band_rgba:     str              = Form(""),        # e.g. "rgba(255,255,255,0.55)"
     accent_color:  str              = Form(""),        # e.g. "#333333"
+    effects_json:  str              = Form("{}"),      # JSON-encoded EffectsConfig dict
     music:         Optional[UploadFile] = File(None),
 ):
     """
@@ -569,9 +552,22 @@ async def test_render(
             with open(music_path, "wb") as f:
                 f.write(await music.read())
 
-        # Stitch clips (reuse helper but pass local paths directly)
+        # Parse effects_json → EffectsConfig (fail-safe: ignore malformed input)
+        import json as _json
+        fx: Optional[EffectsConfig] = None
+        if effects_json and effects_json.strip() not in ("", "{}"):
+            try:
+                fx = EffectsConfig(**_json.loads(effects_json))
+            except Exception:
+                pass
+
+        # Extract transition_type for stitch step
+        transition_type = (fx.transition_type or "none") if fx else "none"
+
+        # Stitch clips — apply xfade transitions if requested
         stitched = _normalize_clips_from_paths(
-            [(ci.url, None, None) for ci in clip_inputs], job_dir, crf
+            [(ci.url, None, None) for ci in clip_inputs], job_dir, crf,
+            transition_type=transition_type,
         )
         frame_b64 = _extract_frame(stitched, job_dir)
 
@@ -588,7 +584,8 @@ async def test_render(
             overrides["accent_color"] = accent_color
         if overrides:
             spec = {**spec, **overrides}
-        output = _apply_overlay(stitched, job_dir, crf, spec, hook_text, text_position, music_path)
+
+        output = _apply_overlay(stitched, job_dir, crf, spec, hook_text, text_position, music_path, effects=fx)
 
         background_tasks.add_task(shutil.rmtree, job_dir, True)
         return FileResponse(
@@ -607,8 +604,9 @@ async def test_render(
 
 
 class StitchRequest(BaseModel):
-    clips:   list[Union[ClipInput, str]]
-    quality: Optional[str] = "high"
+    clips:           list[Union[ClipInput, str]]
+    quality:         Optional[str] = "high"
+    transition_type: Optional[str] = "none"   # none | dissolve | fade | circleopen | pixelize
 
 
 class OverlayRequest(BaseModel):
@@ -627,10 +625,77 @@ class OverlayRequest(BaseModel):
     effects:       Optional[EffectsConfig] = None
 
 
+def _get_clip_duration(path: str) -> float:
+    """Get video duration in seconds using ffprobe."""
+    probe = subprocess.run(
+        [FFPROBE_BIN, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(probe.stdout.strip())
+    except (ValueError, TypeError):
+        return 10.0
+
+
+def _apply_xfade(normalized: list[str], job_dir: str, crf: int, transition_type: str) -> str:
+    """
+    Concatenate normalized clips with xfade transitions using filter_complex.
+    Each transition is 0.5s. Audio is concatenated without crossfade (keeps it simple).
+    xfade is video-only per FFmpeg docs — audio uses the concat filter.
+    """
+    XFADE_DUR = 0.5
+    n = len(normalized)
+
+    if n == 1:
+        return normalized[0]
+
+    durations = [_get_clip_duration(p) for p in normalized]
+
+    # Build xfade video filter chain:
+    # [0:v][1:v]xfade=transition=X:duration=0.5:offset=<d0-0.5>[xv1]
+    # [xv1][2:v]xfade=transition=X:duration=0.5:offset=<d0+d1-1.0>[outv]
+    video_parts: list[str] = []
+    current_v = "[0:v]"
+    cumulative_offset = 0.0
+
+    for i in range(1, n):
+        out_label = f"[xv{i}]" if i < n - 1 else "[outv]"
+        cumulative_offset += max(durations[i - 1] - XFADE_DUR, 0.1)
+        video_parts.append(
+            f"{current_v}[{i}:v]xfade=transition={transition_type}"
+            f":duration={XFADE_DUR}:offset={cumulative_offset:.3f}{out_label}"
+        )
+        current_v = f"[xv{i}]"
+
+    # Audio: simple concat filter — joins audio streams without crossfade
+    audio_inputs = "".join(f"[{i}:a]" for i in range(n))
+    audio_concat = f"{audio_inputs}concat=n={n}:v=0:a=1[outa]"
+
+    filter_complex = ";".join(video_parts) + ";" + audio_concat
+
+    out = f"{job_dir}/stitched.mp4"
+    cmd = [FFMPEG_BIN, "-y"]
+    for p in normalized:
+        cmd += ["-i", p]
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", "[outv]",
+        "-map", "[outa]",
+        "-c:v", "libx264", "-crf", str(crf), "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        out,
+    ]
+    _run(cmd, "Xfade stitch")
+    return out
+
+
 def _normalize_clips_from_paths(
     clip_paths: list[tuple[str, Optional[float], Optional[float]]],
     job_dir: str,
     crf: int,
+    transition_type: str = "none",
 ) -> str:
     """Normalize already-on-disk clips (no HTTP download). Used by /test-render."""
     normalized: list[str] = []
@@ -657,6 +722,10 @@ def _normalize_clips_from_paths(
         _run(cmd, f"Normalize clip {i}")
         normalized.append(out)
 
+    # xfade transitions (filter_complex) — requires >=2 clips
+    if transition_type and transition_type != "none" and len(normalized) > 1:
+        return _apply_xfade(normalized, job_dir, crf, transition_type)
+
     if len(normalized) == 1:
         return normalized[0]
 
@@ -672,7 +741,7 @@ def _normalize_clips_from_paths(
     return stitched
 
 
-def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int) -> str:
+def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int, transition_type: str = "none") -> str:
     """Download, trim, normalize all clips to 1080x1920 and concatenate. Returns stitched path."""
     clip_paths: list[tuple[str, Optional[float], Optional[float]]] = []
     for i, ci in enumerate(clip_inputs):
@@ -708,6 +777,10 @@ def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int) -> st
         ]
         _run(cmd, f"Normalize clip {i}")
         normalized.append(out)
+
+    # xfade transitions (filter_complex) — requires >=2 clips
+    if transition_type and transition_type != "none" and len(normalized) > 1:
+        return _apply_xfade(normalized, job_dir, crf, transition_type)
 
     if len(normalized) == 1:
         return normalized[0]
@@ -827,7 +900,8 @@ async def stitch(req: StitchRequest):
     os.makedirs(job_dir)
 
     try:
-        stitched  = _normalize_clips(clip_inputs, job_dir, crf)
+        stitched  = _normalize_clips(clip_inputs, job_dir, crf,
+                                    transition_type=req.transition_type or "none")
         frame_b64 = _extract_frame(stitched, job_dir)
 
         STITCH_STORE[job_id] = {
@@ -903,155 +977,5 @@ async def overlay(req: OverlayRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/render")
-async def render(req: RenderRequest, background_tasks: BackgroundTasks):
-    if not req.clips:
-        raise HTTPException(status_code=400, detail="No clips provided")
-
-    # Resolve main text (new field takes precedence over legacy)
-    main_text = req.main_text or req.text or ""
-
-    # Resolve template spec
-    spec = _resolve_template(req.template)
-
-    # Resolve text position
-    position = req.text_position or "bottom"
-    if position not in ("top", "center", "bottom"):
-        position = "bottom"
-
-    crf = CRF_MAP.get(req.quality or "high", 18)
-
-    job_id  = uuid.uuid4().hex
-    job_dir = f"{TMP_DIR}/{job_id}"
-    os.makedirs(job_dir)
-
-    try:
-        # ── 1. Download clips ──────────────────────────────────────────────────
-        clip_inputs: list[ClipInput] = []
-        for c in req.clips:
-            if isinstance(c, str):
-                clip_inputs.append(ClipInput(url=c))
-            else:
-                clip_inputs.append(c)
-
-        clip_paths: list[tuple[str, Optional[float], Optional[float]]] = []
-        for i, ci in enumerate(clip_inputs):
-            dest = f"{job_dir}/clip_{i}.mp4"
-            await _download(ci.url, dest)
-            clip_paths.append((dest, ci.start, ci.end))
-
-        # ── 2. Normalize each clip (trim if start/end given) → 1080x1920 ──────
-        normalized: list[str] = []
-        for i, (clip, start, end) in enumerate(clip_paths):
-            out = f"{job_dir}/norm_{i}.mp4"
-            cmd = [FFMPEG_BIN, "-y"]
-
-            # Trim inputs
-            if start is not None:
-                cmd += ["-ss", str(start)]
-            if end is not None:
-                cmd += ["-to", str(end)]
-
-            cmd += ["-i", clip]
-            cmd += [
-                "-vf", (
-                    "scale=1080:1920:force_original_aspect_ratio=decrease,"
-                    "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
-                    "format=yuv420p"
-                ),
-                "-c:v", "libx264", "-crf", str(crf),
-                "-preset", "slow",
-                "-c:a", "aac", "-b:a", "192k",
-                "-r", "30",
-                out,
-            ]
-            _run(cmd, f"Normalize clip {i}")
-            normalized.append(out)
-
-        # ── 3. Concatenate ─────────────────────────────────────────────────────
-        if len(normalized) == 1:
-            concat_out = normalized[0]
-        else:
-            list_file = f"{job_dir}/concat.txt"
-            with open(list_file, "w") as f:
-                for p in normalized:
-                    f.write(f"file '{p}'\n")
-            concat_out = f"{job_dir}/concat.mp4"
-            _run([
-                FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
-                "-i", list_file,
-                "-c", "copy",
-                concat_out,
-            ], "Concat")
-
-        # ── 4. Download music (optional) ───────────────────────────────────────
-        music_path: Optional[str] = None
-        if req.music_url:
-            music_path = f"{job_dir}/music.mp3"
-            await _download(req.music_url, music_path)
-
-        # ── 5. Text overlay + music mix ────────────────────────────────────────
-        output = f"{job_dir}/output.mp4"
-
-        vf = _build_vf_filters(spec, main_text, position, has_music=bool(music_path), effects=req.effects)
-
-        if music_path:
-            # Check if concat_out has an audio stream
-            probe = subprocess.run(
-                [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
-                 "-show_entries", "stream=codec_type", "-of", "csv=p=0", concat_out],
-                capture_output=True, text=True,
-            )
-            has_audio = "audio" in probe.stdout
-
-            if has_audio:
-                audio_filter = (
-                    "[1:a]volume=0.25[music];"
-                    "[0:a][music]amix=inputs=2:duration=first:dropout_transition=3[a]"
-                )
-            else:
-                # No audio in clips — use music only
-                audio_filter = "[1:a]volume=0.25[a]"
-
-            _run([
-                FFMPEG_BIN, "-y",
-                "-i", concat_out,
-                "-i", music_path,
-                "-filter_complex",
-                f"[0:v]{vf}[v];{audio_filter}",
-                "-map", "[v]", "-map", "[a]",
-                "-c:v", "libx264", "-crf", str(crf),
-                "-preset", "slow",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "192k",
-                "-shortest",
-                output,
-            ], "Overlay + music")
-        else:
-            _run([
-                FFMPEG_BIN, "-y", "-i", concat_out,
-                "-vf", vf,
-                "-c:v", "libx264", "-crf", str(crf),
-                "-preset", "slow",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "copy",
-                output,
-            ], "Text overlay")
-
-        # ── 6. Return rendered video ───────────────────────────────────────────
-        # Cleanup job_dir AFTER the response is fully streamed
-        background_tasks.add_task(shutil.rmtree, job_dir, True)
-        return FileResponse(
-            output,
-            media_type="video/mp4",
-            filename=f"reel_{job_id[:8]}.mp4",
-        )
-
-    except HTTPException:
-        shutil.rmtree(job_dir, ignore_errors=True)
-        raise
-    except Exception as exc:
-        shutil.rmtree(job_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=str(exc))
 
 
