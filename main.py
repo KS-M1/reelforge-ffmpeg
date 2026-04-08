@@ -119,6 +119,7 @@ class ClipInput(BaseModel):
     url: str
     start: Optional[float] = None   # seconds
     end: Optional[float] = None     # seconds
+    headers: Optional[dict] = None  # e.g. {"Authorization": "Bearer <token>"}
 
 
 class TemplateSpec(BaseModel):
@@ -406,9 +407,9 @@ def _build_vf_filters(
     )
 
 
-async def _download(url: str, dest: str) -> None:
+async def _download(url: str, dest: str, headers: Optional[dict] = None) -> None:
     async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
-        r = await client.get(url)
+        r = await client.get(url, headers=headers or {})
         r.raise_for_status()
         with open(dest, "wb") as f:
             f.write(r.content)
@@ -748,7 +749,7 @@ def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int, trans
         dest = f"{job_dir}/clip_{i}.mp4"
         # sync download — called from async context via run_in_executor or directly
         with httpx.Client(timeout=180, follow_redirects=True) as client:
-            r = client.get(ci.url)
+            r = client.get(ci.url, headers=ci.headers or {})
             r.raise_for_status()
             with open(dest, "wb") as f:
                 f.write(r.content)
