@@ -643,8 +643,7 @@ def _get_clip_duration(path: str) -> float:
 def _apply_xfade(normalized: list[str], job_dir: str, crf: int, transition_type: str) -> str:
     """
     Concatenate normalized clips with xfade transitions using filter_complex.
-    Each transition is 0.5s. Audio is concatenated without crossfade (keeps it simple).
-    xfade is video-only per FFmpeg docs — audio uses the concat filter.
+    Each transition is 0.5s. Handles clips with no audio stream (inserts anullsrc).
     """
     XFADE_DUR = 0.5
     n = len(normalized)
@@ -654,9 +653,19 @@ def _apply_xfade(normalized: list[str], job_dir: str, crf: int, transition_type:
 
     durations = [_get_clip_duration(p) for p in normalized]
 
-    # Build xfade video filter chain:
-    # [0:v][1:v]xfade=transition=X:duration=0.5:offset=<d0-0.5>[xv1]
-    # [xv1][2:v]xfade=transition=X:duration=0.5:offset=<d0+d1-1.0>[outv]
+    # Probe each normalized clip for audio
+    has_audio_per_clip = []
+    for p in normalized:
+        probe = subprocess.run(
+            [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", p],
+            capture_output=True, text=True,
+        )
+        has_audio_per_clip.append("audio" in probe.stdout)
+
+    any_audio = any(has_audio_per_clip)
+
+    # Build xfade video filter chain
     video_parts: list[str] = []
     current_v = "[0:v]"
     cumulative_offset = 0.0
@@ -670,25 +679,50 @@ def _apply_xfade(normalized: list[str], job_dir: str, crf: int, transition_type:
         )
         current_v = f"[xv{i}]"
 
-    # Audio: simple concat filter — joins audio streams without crossfade
-    audio_inputs = "".join(f"[{i}:a]" for i in range(n))
-    audio_concat = f"{audio_inputs}concat=n={n}:v=0:a=1[outa]"
-
-    filter_complex = ";".join(video_parts) + ";" + audio_concat
-
     out = f"{job_dir}/stitched.mp4"
     cmd = [FFMPEG_BIN, "-y"]
     for p in normalized:
         cmd += ["-i", p]
-    cmd += [
-        "-filter_complex", filter_complex,
-        "-map", "[outv]",
-        "-map", "[outa]",
-        "-c:v", "libx264", "-crf", str(crf), "-preset", "fast",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
-        out,
-    ]
+
+    if not any_audio:
+        # No audio in any clip — skip audio entirely
+        filter_complex = ";".join(video_parts)
+        cmd += [
+            "-filter_complex", filter_complex,
+            "-map", "[outv]",
+            "-c:v", "libx264", "-crf", str(crf), "-preset", "fast",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            out,
+        ]
+    else:
+        # Build audio — insert anullsrc for mute clips to fill gaps
+        anullsrc_parts: list[str] = []
+        audio_labels: list[str] = []
+        for i, has_a in enumerate(has_audio_per_clip):
+            if has_a:
+                audio_labels.append(f"[{i}:a]")
+            else:
+                label = f"[anull{i}]"
+                anullsrc_parts.append(f"anullsrc=r=44100:cl=stereo{label}")
+                audio_labels.append(label)
+
+        audio_concat = (
+            "".join(audio_labels) +
+            f"concat=n={n}:v=0:a=1[outa]"
+        )
+        all_parts = video_parts + anullsrc_parts + [audio_concat]
+        filter_complex = ";".join(all_parts)
+
+        cmd += [
+            "-filter_complex", filter_complex,
+            "-map", "[outv]",
+            "-map", "[outa]",
+            "-c:v", "libx264", "-crf", str(crf), "-preset", "fast",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            out,
+        ]
     _run(cmd, "Xfade stitch")
     return out
 
@@ -773,6 +807,13 @@ def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int, trans
             cmd += ["-ss", str(start)]
         if end is not None:
             cmd += ["-to", str(end)]
+        # Probe for audio stream — use -an if clip is silent to avoid encode error
+        audio_probe = subprocess.run(
+            [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", clip],
+            capture_output=True, text=True,
+        )
+        clip_has_audio = "audio" in audio_probe.stdout
         cmd += [
             "-i", clip,
             "-vf", (
@@ -782,10 +823,13 @@ def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int, trans
             ),
             "-c:v", "libx264", "-crf", str(crf),
             "-preset", "fast",
-            "-c:a", "aac", "-b:a", "192k",
             "-r", "30",
-            out,
         ]
+        if clip_has_audio:
+            cmd += ["-c:a", "aac", "-b:a", "192k"]
+        else:
+            cmd += ["-an"]
+        cmd.append(out)
         _run(cmd, f"Normalize clip {i}")
         normalized.append(out)
 
