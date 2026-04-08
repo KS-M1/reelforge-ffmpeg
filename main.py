@@ -134,6 +134,17 @@ class TemplateSpec(BaseModel):
     overlay: Optional[str] = "rgba(0,0,0,0.4)"
 
 
+class EffectsConfig(BaseModel):
+    """Optional visual effects — all default off. Applied at render time by FFmpeg."""
+    color_grade:          Optional[str]  = "none"   # none|warm|cool|moody|bw|vintage|cross_process
+    vignette:             Optional[bool] = False
+    cinematic_bars:       Optional[bool] = False    # 80px black bars top+bottom
+    grain_intensity:      Optional[int]  = 0         # 0=off, 5-40 (c0s value)
+    chromatic_aberration: Optional[bool] = False    # rgbashift rh=-4 bh=4
+    text_animation:       Optional[str]  = "none"   # none | slide_up
+    transition_type:      Optional[str]  = "none"   # none | dissolve | fade | circleopen | pixelize
+
+
 class RenderRequest(BaseModel):
     # Clips: accept both new {url,start,end} objects and legacy plain strings
     clips: list[Union[ClipInput, str]]
@@ -148,6 +159,8 @@ class RenderRequest(BaseModel):
     music_url: Optional[str] = None
     # Quality
     quality: Optional[str] = "high"
+    # Visual effects
+    effects: Optional[EffectsConfig] = None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -225,13 +238,18 @@ def _build_vf_filters(
     main_text: str,
     position: str,
     has_music: bool,
+    effects: Optional[EffectsConfig] = None,
 ) -> str:
     """
     Build the full -vf filter chain:
       1. scale/pad to 1080x1920
-      2. main hook text with stroke + shadow (no background band)
-      3. thin accent divider line
-      4. subtitle text (smaller, softer)
+      2. (optional) color grade — curves/eq/hue
+      3. (optional) vignette
+      4. (optional) film grain — noise filter
+      5. (optional) chromatic aberration — rgbashift
+      6. main hook text with stroke + shadow (no background band)
+      7. thin accent divider + subtitle text
+      8. (optional) cinematic bars — drawbox top+bottom
     """
     font_path  = _resolve_font(spec.get("font", "Oswald"))
     font_size  = spec.get("font_size", 28)
@@ -239,11 +257,10 @@ def _build_vf_filters(
     accent_col = spec.get("accent_color", "#ffffff")
     subtitle   = spec.get("subtitle", "")
 
-    # Always sentence case — never ALL CAPS from template
     main_safe = _escape_drawtext(main_text or "")
     sub_safe  = _escape_drawtext(subtitle or "")
 
-    # Scale + pad
+    # ── 1. Scale + pad ─────────────────────────────────────────────────────────
     scale_pad = (
         "scale=1080:1920:force_original_aspect_ratio=decrease,"
         "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
@@ -253,56 +270,124 @@ def _build_vf_filters(
     VIDEO_H = 1920
     VIDEO_W = 1080
 
-    # ── Font size ─────────────────────────────────────────────────────────────
-    # Target 50-58px on 1080px wide — readable but not overwhelming.
-    # (Research: 45-65px optimal for fashion reels, 10 words max per line)
-    vid_font_size = max(min(int(font_size * 1.85), 58), 48)
+    # ── 2. Color grade ─────────────────────────────────────────────────────────
+    # Uses curves (spline colour correction) + eq (brightness/contrast/saturation)
+    # and hue (desaturation). All inline — no .cube LUT files needed.
+    color_grade_filter = ""
+    if effects and effects.color_grade and effects.color_grade != "none":
+        grade = effects.color_grade
+        if grade == "warm":
+            # Boost reds/yellows, reduce blues → golden-hour look
+            color_grade_filter = (
+                ",curves=r='0/0 0.5/0.57 1/1':g='0/0 0.5/0.52 1/1':b='0/0 0.5/0.42 1/0.88'"
+            )
+        elif grade == "cool":
+            # Lift blues, reduce reds → editorial cold look
+            color_grade_filter = (
+                ",curves=r='0/0 1/0.88':b='0/0 1/1.10'"
+                ",eq=saturation=0.92"
+            )
+        elif grade == "moody":
+            # Lifted blacks, lower saturation, slight contrast boost → dark moody
+            color_grade_filter = (
+                ",eq=contrast=1.10:saturation=0.72:brightness=-0.06"
+            )
+        elif grade == "bw":
+            # True black-and-white with enhanced contrast
+            color_grade_filter = ",hue=s=0,eq=contrast=1.25"
+        elif grade == "vintage":
+            # FFmpeg built-in vintage preset (lifted shadows, muted colours)
+            color_grade_filter = ",curves=preset=vintage"
+        elif grade == "cross_process":
+            # Cross-processed film look (built-in preset)
+            color_grade_filter = ",curves=preset=cross_process"
 
-    # ── Vertical placement ────────────────────────────────────────────────────
-    # Bottom safe zone: 280px from bottom (clears Instagram action bar + likes/comments).
-    # Top safe zone: 120px (clears profile row).
-    sub_size     = max(int(vid_font_size * 0.50), 26)
-    text_block_h = vid_font_size + sub_size + 28   # hook + gap + subtitle
+    # ── 3. Vignette ─────────────────────────────────────────────────────────────
+    # mode=forward (default) darkens edges — exactly what we want.
+    # angle PI/4 ≈ 45° gives a visible but not extreme vignette.
+    vignette_filter = ""
+    if effects and effects.vignette:
+        vignette_filter = ",vignette=a=PI/4"
+
+    # ── 4. Film grain ──────────────────────────────────────────────────────────
+    # noise filter: c0s = luma noise strength (0-100), c0f = t+u means temporal+uniform
+    # temporal: grain changes every frame (realistic). uniform: flat distribution.
+    grain_filter = ""
+    if effects and effects.grain_intensity and effects.grain_intensity > 0:
+        strength = max(5, min(int(effects.grain_intensity), 40))
+        grain_filter = f",noise=c0s={strength}:c0f=t+u"
+
+    # ── 5. Chromatic aberration ────────────────────────────────────────────────
+    # rgbashift: shifts red left (rh=-4) and blue right (bh=4) by 4 pixels.
+    # smear edge mode avoids black margins at frame edges.
+    # Available since FFmpeg 4.2.
+    chroma_filter = ""
+    if effects and effects.chromatic_aberration:
+        chroma_filter = ",rgbashift=rh=-4:bh=4:edge=smear"
+
+    # ── Font size + vertical placement ────────────────────────────────────────
+    vid_font_size = max(min(int(font_size * 1.85), 58), 48)
+    sub_size      = max(int(vid_font_size * 0.50), 26)
+    text_block_h  = vid_font_size + sub_size + 28
 
     if position == "top":
         main_y_px = 120
     elif position == "center":
         main_y_px = (VIDEO_H - text_block_h) // 2
-    else:  # bottom — 280px clear from very bottom edge
+    else:
         main_y_px = VIDEO_H - text_block_h - 280
 
     div_y_px = main_y_px + vid_font_size + 10
     sub_y_px = main_y_px + vid_font_size + 22
 
-    # ── Readability: stroke + shadow (no band) ────────────────────────────────
-    # Pro fashion brands use text stroke + drop shadow for clean floating text.
-    # Opposite-colour stroke ensures legibility on any background.
-    tc_ffmpeg = _hex_to_rgba(text_color)
+    # ── Readability: stroke + shadow ──────────────────────────────────────────
+    tc_ffmpeg    = _hex_to_rgba(text_color)
     is_dark_text = int(text_color.strip().lstrip("#")[:2] or "ff", 16) < 0x88
-    border_color  = "white@0.65" if is_dark_text else "black@0.65"
-    shadow_color  = "white@0.50" if is_dark_text else "black@0.50"
+    border_color = "white@0.65" if is_dark_text else "black@0.65"
+    shadow_color = "white@0.50" if is_dark_text else "black@0.50"
 
-    # Main hook text — stroke + shadow, centered, no background
-    main_filter = (
-        f"drawtext=fontfile='{font_path}'"
-        f":text='{main_safe}'"
-        f":fontsize={vid_font_size}"
-        f":fontcolor={tc_ffmpeg}"
-        ":x=(w-text_w)/2"
-        f":y={main_y_px}"
-        f":borderw=2:bordercolor={border_color}"
-        f":shadowcolor={shadow_color}"
-        ":shadowx=3:shadowy=3"
-        ":line_spacing=4"
-    )
+    # ── 6. Main hook text ──────────────────────────────────────────────────────
+    # slide_up animation: text starts off-screen at bottom (y=h) and slides up
+    # to its final position over the first 0.5 seconds using drawtext eval=frame.
+    # Commas inside FFmpeg expressions must be escaped as \, (backslash-comma).
+    use_slide_up = effects and effects.text_animation == "slide_up"
+    if use_slide_up:
+        # y = final_y + (VIDEO_H - final_y) * (1 - t/0.5) for t < 0.5, else final_y
+        slide_dist = VIDEO_H - main_y_px
+        y_expr     = f"if(lt(t\\,0.5)\\,{main_y_px}+{slide_dist}*(1-t/0.5)\\,{main_y_px})"
+        main_filter = (
+            f"drawtext=fontfile='{font_path}'"
+            f":text='{main_safe}'"
+            f":fontsize={vid_font_size}"
+            f":fontcolor={tc_ffmpeg}"
+            ":x=(w-text_w)/2"
+            f":y={y_expr}"
+            f":borderw=2:bordercolor={border_color}"
+            f":shadowcolor={shadow_color}"
+            ":shadowx=3:shadowy=3"
+            ":line_spacing=4"
+            ":eval=frame"
+        )
+    else:
+        main_filter = (
+            f"drawtext=fontfile='{font_path}'"
+            f":text='{main_safe}'"
+            f":fontsize={vid_font_size}"
+            f":fontcolor={tc_ffmpeg}"
+            ":x=(w-text_w)/2"
+            f":y={main_y_px}"
+            f":borderw=2:bordercolor={border_color}"
+            f":shadowcolor={shadow_color}"
+            ":shadowx=3:shadowy=3"
+            ":line_spacing=4"
+        )
 
-    # Thin accent divider + subtitle (no background, stroke for readability)
+    # ── 7. Accent divider + subtitle ──────────────────────────────────────────
     extra_filters = ""
     if subtitle:
         ac_ffmpeg     = _hex_to_rgba(accent_col)
         ac_ffmpeg_sub = _hex_to_rgba(accent_col, 0.92)
         div_x         = (VIDEO_W - 160) // 2
-
         extra_filters = (
             f",drawbox=x={div_x}:y={div_y_px}:w=160:h=2:color={ac_ffmpeg}:thickness=fill"
             f",drawtext=fontfile='{font_path}'"
@@ -317,7 +402,26 @@ def _build_vf_filters(
             ":line_spacing=4"
         )
 
-    return f"{scale_pad},{main_filter}{extra_filters}"
+    # ── 8. Cinematic bars ──────────────────────────────────────────────────────
+    # 80px black bars top and bottom — stylistic letterbox for vertical video.
+    # Applied last so they always overlay text (text stays inside bars-free zone).
+    bars_filter = ""
+    if effects and effects.cinematic_bars:
+        bars_filter = (
+            ",drawbox=x=0:y=0:w=1080:h=80:color=black:t=fill"
+            ",drawbox=x=0:y=1840:w=1080:h=80:color=black:t=fill"
+        )
+
+    return (
+        f"{scale_pad}"
+        f"{color_grade_filter}"
+        f"{vignette_filter}"
+        f"{grain_filter}"
+        f"{chroma_filter}"
+        f",{main_filter}"
+        f"{extra_filters}"
+        f"{bars_filter}"
+    )
 
 
 async def _download(url: str, dest: str) -> None:
@@ -519,6 +623,8 @@ class OverlayRequest(BaseModel):
     text_color:    Optional[str] = None   # e.g. "#111111"
     band_rgba:     Optional[str] = None   # e.g. "rgba(255,255,255,0.55)"
     accent_color:  Optional[str] = None   # e.g. "#333333"
+    # Visual effects
+    effects:       Optional[EffectsConfig] = None
 
 
 def _normalize_clips_from_paths(
@@ -647,10 +753,11 @@ def _extract_frame(stitched: str, job_dir: str) -> str:
 
 def _apply_overlay(stitched: str, job_dir: str, crf: int,
                    spec: dict, main_text: str, position: str,
-                   music_url: Optional[str]) -> str:
+                   music_url: Optional[str],
+                   effects: Optional[EffectsConfig] = None) -> str:
     """Apply text overlay (and optional music) to stitched video. Returns output path."""
     output = f"{job_dir}/output.mp4"
-    vf     = _build_vf_filters(spec, main_text, position, has_music=bool(music_url))
+    vf     = _build_vf_filters(spec, main_text, position, has_music=bool(music_url), effects=effects)
 
     if music_url:
         music_path = f"{job_dir}/music.mp3"
@@ -778,7 +885,8 @@ async def overlay(req: OverlayRequest, background_tasks: BackgroundTasks):
 
     try:
         output = _apply_overlay(stitched, job_dir, crf, spec,
-                                req.main_text or "", position, req.music_url)
+                                req.main_text or "", position, req.music_url,
+                                effects=req.effects)
 
         STITCH_STORE.pop(req.video_id, None)
         background_tasks.add_task(shutil.rmtree, job_dir, True)
@@ -885,7 +993,7 @@ async def render(req: RenderRequest, background_tasks: BackgroundTasks):
         # ── 5. Text overlay + music mix ────────────────────────────────────────
         output = f"{job_dir}/output.mp4"
 
-        vf = _build_vf_filters(spec, main_text, position, has_music=bool(music_path))
+        vf = _build_vf_filters(spec, main_text, position, has_music=bool(music_path), effects=req.effects)
 
         if music_path:
             # Check if concat_out has an audio stream
