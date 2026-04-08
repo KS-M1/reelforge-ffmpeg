@@ -708,6 +708,12 @@ def _normalize_clips_from_paths(
             cmd += ["-ss", str(start)]
         if end is not None:
             cmd += ["-to", str(end)]
+        audio_probe = subprocess.run(
+            [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", clip],
+            capture_output=True, text=True,
+        )
+        clip_has_audio = "audio" in audio_probe.stdout
         cmd += [
             "-i", clip,
             "-vf", (
@@ -717,10 +723,13 @@ def _normalize_clips_from_paths(
             ),
             "-c:v", "libx264", "-crf", str(crf),
             "-preset", "fast",
-            "-c:a", "aac", "-b:a", "192k",
             "-r", "30",
-            out,
         ]
+        if clip_has_audio:
+            cmd += ["-c:a", "aac", "-b:a", "192k"]
+        else:
+            cmd += ["-an"]
+        cmd.append(out)
         _run(cmd, f"Normalize clip {i}")
         normalized.append(out)
 
@@ -864,13 +873,25 @@ def _apply_overlay(stitched: str, job_dir: str, crf: int,
             "-shortest", output,
         ], "Overlay + music")
     else:
-        _run([
+        # Check if stitched video has an audio stream before using -c:a copy
+        probe = subprocess.run(
+            [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", stitched],
+            capture_output=True, text=True,
+        )
+        has_audio = "audio" in probe.stdout
+        cmd = [
             FFMPEG_BIN, "-y", "-i", stitched,
             "-vf", vf,
             "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
-            "-pix_fmt", "yuv420p", "-c:a", "copy",
-            output,
-        ], "Text overlay")
+            "-pix_fmt", "yuv420p",
+        ]
+        if has_audio:
+            cmd += ["-c:a", "copy"]
+        else:
+            cmd += ["-an"]  # no audio
+        cmd.append(output)
+        _run(cmd, "Text overlay")
 
     return output
 
