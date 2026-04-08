@@ -349,7 +349,6 @@ def _build_vf_filters(
             f":shadowcolor={shadow_color}"
             ":shadowx=3:shadowy=3"
             ":line_spacing=4"
-            ":eval=frame"
         )
     else:
         main_filter = (
