@@ -765,8 +765,6 @@ def _normalize_clips_from_paths(
         cmd = [FFMPEG_BIN, "-y"]
         if start is not None:
             cmd += ["-ss", str(start)]
-        if end is not None:
-            cmd += ["-to", str(end)]
         audio_probe = subprocess.run(
             [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
              "-show_entries", "stream=codec_type", "-of", "csv=p=0", clip],
@@ -788,6 +786,9 @@ def _normalize_clips_from_paths(
             cmd += ["-c:a", "aac", "-b:a", "192k"]
         else:
             cmd += ["-an"]
+        if end is not None:
+            duration = end - (start or 0.0)
+            cmd += ["-t", str(max(duration, 0.1))]
         cmd.append(out)
         _run(cmd, f"Normalize clip {i}")
         normalized.append(out)
@@ -828,10 +829,9 @@ def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int, trans
     for i, (clip, start, end) in enumerate(clip_paths):
         out = f"{job_dir}/norm_{i}.mp4"
         cmd = [FFMPEG_BIN, "-y"]
+        # -ss before -i = fast input seek (accurate enough for short clips)
         if start is not None:
             cmd += ["-ss", str(start)]
-        if end is not None:
-            cmd += ["-to", str(end)]
         # Probe for audio stream — use -an if clip is silent to avoid encode error
         audio_probe = subprocess.run(
             [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
@@ -854,6 +854,10 @@ def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int, trans
             cmd += ["-c:a", "aac", "-b:a", "192k"]
         else:
             cmd += ["-an"]
+        # -t as OUTPUT option = encode for this many seconds (unambiguous after fast-seek)
+        if end is not None:
+            duration = end - (start or 0.0)
+            cmd += ["-t", str(max(duration, 0.1))]
         cmd.append(out)
         _run(cmd, f"Normalize clip {i}")
         normalized.append(out)
