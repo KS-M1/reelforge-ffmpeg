@@ -222,6 +222,7 @@ def _build_vf_filters(
     position: str,
     has_music: bool,
     effects: Optional[EffectsConfig] = None,
+    font_size_override: Optional[int] = None,
 ) -> str:
     """
     Build the full -vf filter chain:
@@ -309,8 +310,12 @@ def _build_vf_filters(
         chroma_filter = ",rgbashift=rh=-4:bh=4:edge=smear"
 
     # ── Font size + vertical placement ────────────────────────────────────────
-    # Use 1.5× multiplier (was 1.85) and clamp to 36-46px — less imposing on screen
-    vid_font_size = max(min(int(font_size * 1.5), 46), 36)
+    # If caller set a manual override, use it directly (clamped to 16-72).
+    # Otherwise scale template base size by 1.5× and clamp to 36-46px.
+    if font_size_override and font_size_override > 0:
+        vid_font_size = max(min(int(font_size_override), 72), 16)
+    else:
+        vid_font_size = max(min(int(font_size * 1.5), 46), 36)
     sub_size      = max(int(vid_font_size * 0.50), 22)
     text_block_h  = vid_font_size + sub_size + 28
 
@@ -643,6 +648,8 @@ class OverlayRequest(BaseModel):
     accent_color:  Optional[str] = None   # e.g. "#333333"
     # Visual effects
     effects:       Optional[EffectsConfig] = None
+    # Manual overrides — take priority over template + AI values
+    font_size_override: Optional[int] = None   # 16-72px; bypasses template font_size + multiplier
 
 
 def _get_clip_duration(path: str) -> float:
@@ -901,10 +908,11 @@ def _apply_overlay(stitched: str, job_dir: str, crf: int,
                    spec: dict, main_text: str, position: str,
                    music_url: Optional[str],
                    effects: Optional[EffectsConfig] = None,
-                   music_headers: Optional[dict] = None) -> str:
+                   music_headers: Optional[dict] = None,
+                   font_size_override: Optional[int] = None) -> str:
     """Apply text overlay (and optional music) to stitched video. Returns output path."""
     output = f"{job_dir}/output.mp4"
-    vf     = _build_vf_filters(spec, main_text, position, has_music=bool(music_url), effects=effects)
+    vf     = _build_vf_filters(spec, main_text, position, has_music=bool(music_url), effects=effects, font_size_override=font_size_override)
 
     if music_url:
         music_path = f"{job_dir}/music.mp3"
@@ -1046,7 +1054,8 @@ async def overlay(req: OverlayRequest, background_tasks: BackgroundTasks):
     try:
         output = _apply_overlay(stitched, job_dir, crf, spec,
                                 req.main_text or "", position, req.music_url,
-                                effects=req.effects, music_headers=req.music_headers)
+                                effects=req.effects, music_headers=req.music_headers,
+                                font_size_override=req.font_size_override)
 
         STITCH_STORE.pop(req.video_id, None)
         background_tasks.add_task(shutil.rmtree, job_dir, True)
