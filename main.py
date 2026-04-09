@@ -309,12 +309,13 @@ def _build_vf_filters(
         chroma_filter = ",rgbashift=rh=-4:bh=4:edge=smear"
 
     # ── Font size + vertical placement ────────────────────────────────────────
-    vid_font_size = max(min(int(font_size * 1.85), 58), 48)
-    sub_size      = max(int(vid_font_size * 0.50), 26)
+    # Use 1.5× multiplier (was 1.85) and clamp to 36-46px — less imposing on screen
+    vid_font_size = max(min(int(font_size * 1.5), 46), 36)
+    sub_size      = max(int(vid_font_size * 0.50), 22)
     text_block_h  = vid_font_size + sub_size + 28
 
     if position == "top":
-        main_y_px = 120
+        main_y_px = 180   # was 120 — give safe distance from top edge
     elif position == "center":
         main_y_px = (VIDEO_H - text_block_h) // 2
     else:
@@ -323,19 +324,36 @@ def _build_vf_filters(
     div_y_px = main_y_px + vid_font_size + 10
     sub_y_px = main_y_px + vid_font_size + 22
 
+    # ── Overlay band behind text (replaces border-stroke highlight) ────────────
+    # Parse the template's overlay color (e.g. "rgba(0,0,0,0.55)") and draw a
+    # semi-transparent rectangle behind the text block so the text sits cleanly
+    # on a colored band rather than relying on a thick stroke for contrast.
+    overlay_str  = spec.get("overlay", "")
+    band_filter  = ""
+    if overlay_str and overlay_str != "rgba(0,0,0,0)":
+        ov_alpha = _parse_overlay_alpha(overlay_str)
+        ov_r, ov_g, ov_b = _parse_overlay_rgb(overlay_str)
+        if ov_alpha > 0.05:
+            band_alpha_hex = f"{min(int(ov_alpha * 255), 255):02x}"
+            band_color     = f"#{ov_r:02x}{ov_g:02x}{ov_b:02x}{band_alpha_hex}"
+            band_pad       = 24   # px padding around text block
+            band_y         = max(0, main_y_px - band_pad)
+            band_h         = text_block_h + band_pad * 2
+            band_filter    = (
+                f",drawbox=x=0:y={band_y}:w={VIDEO_W}:h={band_h}"
+                f":color={band_color}:t=fill"
+            )
+
     # ── Readability: stroke + shadow ──────────────────────────────────────────
+    # Keep a thin border (1px) for extra sharpness but no thick highlight stroke
     tc_ffmpeg    = _hex_to_rgba(text_color)
     is_dark_text = int(text_color.strip().lstrip("#")[:2] or "ff", 16) < 0x88
-    border_color = "white@0.65" if is_dark_text else "black@0.65"
-    shadow_color = "white@0.50" if is_dark_text else "black@0.50"
+    border_color = "white@0.45" if is_dark_text else "black@0.45"
+    shadow_color = "white@0.35" if is_dark_text else "black@0.35"
 
     # ── 6. Main hook text ──────────────────────────────────────────────────────
-    # slide_up animation: text starts off-screen at bottom (y=h) and slides up
-    # to its final position over the first 0.5 seconds using drawtext eval=frame.
-    # Commas inside FFmpeg expressions must be escaped as \, (backslash-comma).
     use_slide_up = effects and effects.text_animation == "slide_up"
     if use_slide_up:
-        # y = final_y + (VIDEO_H - final_y) * (1 - t/0.5) for t < 0.5, else final_y
         slide_dist = VIDEO_H - main_y_px
         y_expr     = f"if(lt(t\\,0.5)\\,{main_y_px}+{slide_dist}*(1-t/0.5)\\,{main_y_px})"
         main_filter = (
@@ -345,9 +363,9 @@ def _build_vf_filters(
             f":fontcolor={tc_ffmpeg}"
             ":x=(w-text_w)/2"
             f":y={y_expr}"
-            f":borderw=2:bordercolor={border_color}"
+            f":borderw=1:bordercolor={border_color}"
             f":shadowcolor={shadow_color}"
-            ":shadowx=3:shadowy=3"
+            ":shadowx=2:shadowy=2"
             ":line_spacing=4"
         )
     else:
@@ -358,9 +376,9 @@ def _build_vf_filters(
             f":fontcolor={tc_ffmpeg}"
             ":x=(w-text_w)/2"
             f":y={main_y_px}"
-            f":borderw=2:bordercolor={border_color}"
+            f":borderw=1:bordercolor={border_color}"
             f":shadowcolor={shadow_color}"
-            ":shadowx=3:shadowy=3"
+            ":shadowx=2:shadowy=2"
             ":line_spacing=4"
         )
 
@@ -400,6 +418,7 @@ def _build_vf_filters(
         f"{vignette_filter}"
         f"{grain_filter}"
         f"{chroma_filter}"
+        f"{band_filter}"        # overlay band behind text — drawn before text
         f",{main_filter}"
         f"{extra_filters}"
         f"{bars_filter}"
