@@ -212,6 +212,7 @@ def _escape_drawtext(text: str) -> str:
         .replace("'",  "\\'")
         .replace(":",  "\\:")
         .replace("%",  "\\%")
+        .replace(",",  "\\,")   # commas break filter chain when inside drawtext text= value
     )
 
 
@@ -316,7 +317,7 @@ def _build_vf_filters(
         vid_font_size = max(min(int(font_size_override), 72), 16)
     else:
         vid_font_size = max(min(int(font_size * 1.5), 46), 36)
-    sub_size      = max(int(vid_font_size * 0.50), 22)
+    sub_size = max(int(vid_font_size * 0.55), 16)  # proportional to main — scales with font size
     text_block_h  = vid_font_size + sub_size + 28
 
     if position == "top":
@@ -1074,6 +1075,7 @@ async def overlay(req: OverlayRequest, background_tasks: BackgroundTasks):
         STITCH_STORE.pop(req.video_id, None)
         shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(exc))
+
 
 
 
