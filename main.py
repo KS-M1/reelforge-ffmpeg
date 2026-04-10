@@ -934,9 +934,14 @@ def _apply_overlay(stitched: str, job_dir: str, crf: int,
         )
         has_audio = "audio" in probe.stdout
         audio_filter = (
+            # Clips have original audio: mix with background music at 25% volume.
+            # duration=first ties mix length to video audio; dropout_transition=3 fades
+            # music gracefully when it ends before video.
             "[1:a]volume=0.25[music];[0:a][music]amix=inputs=2:duration=first:dropout_transition=3[a]"
             if has_audio else
-            "[1:a]volume=0.25[a]"
+            # Clips have no audio: loop music indefinitely so it always covers the
+            # full video length. -shortest stops output at video end, no overrun.
+            "[1:a]volume=0.25,aloop=loop=-1:size=2e+09[a]"
         )
         _run([
             FFMPEG_BIN, "-y",
