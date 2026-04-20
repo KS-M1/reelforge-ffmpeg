@@ -383,25 +383,45 @@ def _hex_to_rgba(hex_str: str, alpha: int = 255) -> tuple:
     return (255, 255, 255, alpha)
 
 
+def _word_wrap(text: str, font: "ImageFont.FreeTypeFont", max_w: int) -> str:
+    """Break text into lines so each line fits within max_w pixels."""
+    words = text.split()
+    if not words:
+        return text
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = current + " " + word
+        tmp = Image.new("RGBA", (10000, 200), (0, 0, 0, 0))
+        w = ImageDraw.Draw(tmp).textbbox((0, 0), candidate, font=font, anchor="lt")[2]
+        if w <= max_w:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return "\n".join(lines)
+
+
 def _render_text_to_layer(text: str, font: "ImageFont.FreeTypeFont", color: tuple,
-                          shadow_base: tuple, canvas_w: int = 5000, canvas_h: int = 2000) -> "Image.Image":
+                          shadow_base: tuple, canvas_w: int = 5000, canvas_h: int = 3000) -> "Image.Image":
     """
-    Render text onto an oversized canvas, then auto-crop to actual pixel bounds.
-    This guarantees NO clipping regardless of font descenders (g, y, j, p, etc.).
-    Returns a tight RGBA image of just the rendered text.
+    Render text (single or multi-line) onto an oversized canvas, then auto-crop to actual
+    pixel bounds. Guarantees NO clipping regardless of font descenders or line count.
     """
     tmp = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
     d   = ImageDraw.Draw(tmp)
-    ox, oy = canvas_w // 4, canvas_h // 4   # start well inside canvas
+    ox, oy = canvas_w // 4, canvas_h // 6
 
-    # Multi-layer shadow
+    spacing = int(font.size * 0.25) if hasattr(font, "size") else 20
+
     for off, alpha in [(5, 30), (3, 55), (1, 40)]:
-        d.text((ox + off, oy + off), text, font=font,
-               fill=(*shadow_base, alpha), anchor="lt")
-    # Main text
-    d.text((ox, oy), text, font=font, fill=color, anchor="lt")
+        d.multiline_text((ox + off, oy + off), text, font=font,
+                         fill=(*shadow_base, alpha), anchor="lt",
+                         align="center", spacing=spacing)
+    d.multiline_text((ox, oy), text, font=font, fill=color,
+                     anchor="lt", align="center", spacing=spacing)
 
-    # Auto-crop to actual non-transparent pixels
     bounds = tmp.getbbox()
     if not bounds:
         return tmp
@@ -450,16 +470,19 @@ def _render_text_png(
         except Exception:
             return ImageFont.load_default()
 
-    # Auto-fit: shrink font until text fits within MAX_TEXT_W
-    while vid_fs > 16:
+    # Auto-fit: shrink font until text fits on one line — floor at 52px, then wrap
+    MIN_FONT_SIZE = 52
+    while vid_fs > MIN_FONT_SIZE:
         probe_font = _load_font(vid_fs)
         tmp = Image.new("RGBA", (5000, 200), (0, 0, 0, 0))
         bbox = ImageDraw.Draw(tmp).textbbox((0, 0), main_str, font=probe_font, anchor="lt")
         if (bbox[2] - bbox[0]) <= MAX_TEXT_W:
             break
-        vid_fs = int(vid_fs * 0.88)  # reduce by ~12% each step
+        vid_fs = int(vid_fs * 0.88)
 
     main_font = _load_font(vid_fs)
+    # If text still overflows at min font size, wrap to multiple lines
+    main_str  = _word_wrap(main_str, main_font, MAX_TEXT_W)
     sub_fs    = max(int(vid_fs * 0.55), 16)
     sub_font  = _load_font(sub_fs)
 
