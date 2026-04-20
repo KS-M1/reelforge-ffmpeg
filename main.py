@@ -470,19 +470,21 @@ def _render_text_png(
         except Exception:
             return ImageFont.load_default()
 
-    # Auto-fit: shrink font until text fits on one line — floor at 52px, then wrap
-    MIN_FONT_SIZE = 52
-    while vid_fs > MIN_FONT_SIZE:
+    # Strategy: wrap first at full font size; only shrink if a single word is too wide
+    main_font = _load_font(vid_fs)
+    main_str  = _word_wrap(main_str, main_font, MAX_TEXT_W)
+
+    # Shrink only if a single word still exceeds width (can't wrap further)
+    longest_word = max(main_str.split(), key=lambda w: len(w)) if main_str.split() else main_str
+    while vid_fs > 40:
         probe_font = _load_font(vid_fs)
         tmp = Image.new("RGBA", (5000, 200), (0, 0, 0, 0))
-        bbox = ImageDraw.Draw(tmp).textbbox((0, 0), main_str, font=probe_font, anchor="lt")
+        bbox = ImageDraw.Draw(tmp).textbbox((0, 0), longest_word, font=probe_font, anchor="lt")
         if (bbox[2] - bbox[0]) <= MAX_TEXT_W:
             break
         vid_fs = int(vid_fs * 0.88)
-
-    main_font = _load_font(vid_fs)
-    # If text still overflows at min font size, wrap to multiple lines
-    main_str  = _word_wrap(main_str, main_font, MAX_TEXT_W)
+        main_font = _load_font(vid_fs)
+        main_str  = _word_wrap(main_str.replace("\n", " "), main_font, MAX_TEXT_W)
     sub_fs    = max(int(vid_fs * 0.55), 16)
     sub_font  = _load_font(sub_fs)
 
