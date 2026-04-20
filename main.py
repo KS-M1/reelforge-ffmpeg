@@ -252,8 +252,8 @@ def _build_vf_filters(
 
     # ── 1. Scale + pad ─────────────────────────────────────────────────────────
     scale_pad = (
-        "scale=1080:1920:force_original_aspect_ratio=decrease,"
-        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
+        "scale=1080:1920:force_original_aspect_ratio=increase,"
+        "crop=1080:1920,"
         "format=yuv420p"
     )
 
@@ -881,8 +881,8 @@ def _normalize_clips_from_paths(
         cmd += [
             "-i", clip,
             "-vf", (
-                "scale=1080:1920:force_original_aspect_ratio=decrease,"
-                "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
+                "scale=1080:1920:force_original_aspect_ratio=increase,"
+                "crop=1080:1920,"
                 "format=yuv420p"
             ),
             "-c:v", "libx264", "-crf", str(crf),
@@ -949,8 +949,8 @@ def _normalize_clips(clip_inputs: list[ClipInput], job_dir: str, crf: int, trans
         cmd += [
             "-i", clip,
             "-vf", (
-                "scale=1080:1920:force_original_aspect_ratio=decrease,"
-                "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
+                "scale=1080:1920:force_original_aspect_ratio=increase,"
+                "crop=1080:1920,"
                 "format=yuv420p"
             ),
             "-c:v", "libx264", "-crf", str(crf),
