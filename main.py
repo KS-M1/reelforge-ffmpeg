@@ -383,6 +383,31 @@ def _hex_to_rgba(hex_str: str, alpha: int = 255) -> tuple:
     return (255, 255, 255, alpha)
 
 
+def _render_text_to_layer(text: str, font: "ImageFont.FreeTypeFont", color: tuple,
+                          shadow_base: tuple, canvas_w: int = 2000, canvas_h: int = 1000) -> "Image.Image":
+    """
+    Render text onto an oversized canvas, then auto-crop to actual pixel bounds.
+    This guarantees NO clipping regardless of font descenders (g, y, j, p, etc.).
+    Returns a tight RGBA image of just the rendered text.
+    """
+    tmp = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    d   = ImageDraw.Draw(tmp)
+    ox, oy = canvas_w // 4, canvas_h // 4   # start well inside canvas
+
+    # Multi-layer shadow
+    for off, alpha in [(5, 30), (3, 55), (1, 40)]:
+        d.text((ox + off, oy + off), text, font=font,
+               fill=(*shadow_base, alpha), anchor="lt")
+    # Main text
+    d.text((ox, oy), text, font=font, fill=color, anchor="lt")
+
+    # Auto-crop to actual non-transparent pixels
+    bounds = tmp.getbbox()
+    if not bounds:
+        return tmp
+    return tmp.crop(bounds)
+
+
 def _render_text_png(
     spec: dict,
     main_text: str,
@@ -393,8 +418,8 @@ def _render_text_png(
 ) -> str:
     """
     Render hook text + subtitle to a transparent 1080×1920 RGBA PNG using Pillow.
-    Includes descent padding so letters like g/p/y are never clipped, and
-    a polished multi-layer drop shadow for depth.
+    Text is rendered on an oversized canvas first, then auto-cropped to actual
+    pixel bounds — guarantees no clipping for any font regardless of descenders.
     """
     font_family = spec.get("font", "Oswald")
     font_size   = spec.get("font_size", 28)
@@ -426,29 +451,18 @@ def _render_text_png(
         main_font = ImageFont.load_default()
         sub_font  = ImageFont.load_default()
 
-    img  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
+    is_dark   = int((text_color.strip("#") + "ff")[:2], 16) < 0x88
+    s_base    = (255, 255, 255) if is_dark else (0, 0, 0)
 
-    # ── Measure text using anchor="lt" so bbox coords are always positive ──────
-    bbox   = draw.textbbox((0, 0), main_str, font=main_font, anchor="lt")
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
+    # Render each text element to a tight auto-cropped layer
+    main_layer = _render_text_to_layer(main_str, main_font, _hex_to_rgba(text_color), s_base)
+    text_w, full_text_h = main_layer.size
 
-    # Descent padding: use font metrics + generous extra so script/handwritten
-    # descenders (g, y, j, p in fonts like Guttery) are never clipped.
-    try:
-        ascent, descent = main_font.getmetrics()
-        # descent from getmetrics is the space below baseline already in bbox,
-        # but script fonts often exceed it — add 40% of font size as safe buffer.
-        descent_pad = abs(descent) + int(vid_fs * 0.40)
-    except Exception:
-        descent_pad = int(vid_fs * 0.45)
-    full_text_h = text_h + descent_pad
-
-    sub_h = 0
+    sub_layer = None
+    sub_w = sub_h = 0
     if sub_str:
-        sb    = draw.textbbox((0, 0), sub_str, font=sub_font, anchor="lt")
-        sub_h = sb[3] - sb[1]
+        sub_layer = _render_text_to_layer(sub_str, sub_font, _hex_to_rgba(accent_col), s_base)
+        sub_w, sub_h = sub_layer.size
 
     block_h = full_text_h + (32 + sub_h if sub_str else 0)
 
@@ -461,22 +475,15 @@ def _render_text_png(
 
     main_x = (W - text_w) // 2
 
-    # ── Multi-layer drop shadow — gives depth without a background box ────────
-    is_dark = int((text_color.strip("#") + "ff")[:2], 16) < 0x88
-    s_base  = (255, 255, 255) if is_dark else (0, 0, 0)
-    for off, alpha in [(5, 30), (3, 55), (1, 40)]:
-        draw.text(
-            (main_x + off, main_y + off), main_str,
-            font=main_font, fill=(*s_base, alpha), anchor="lt",
-        )
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
-    # ── Main text ─────────────────────────────────────────────────────────────
-    draw.text((main_x, main_y), main_str, font=main_font,
-              fill=_hex_to_rgba(text_color), anchor="lt")
+    # ── Paste main text layer ─────────────────────────────────────────────────
+    img.paste(main_layer, (main_x, main_y), main_layer)
 
-    if sub_str:
-        div_y  = main_y + full_text_h + 10
-        sub_y  = main_y + full_text_h + 22
+    if sub_layer:
+        draw  = ImageDraw.Draw(img)
+        div_y = main_y + full_text_h + 10
+        sub_y = main_y + full_text_h + 22
 
         # Accent divider
         div_x1 = (W - 160) // 2
@@ -485,10 +492,8 @@ def _render_text_png(
                   fill=_hex_to_rgba(accent_col), width=2)
 
         # Subtitle centered
-        sb    = draw.textbbox((0, 0), sub_str, font=sub_font, anchor="lt")
-        sub_x = (W - (sb[2] - sb[0])) // 2
-        draw.text((sub_x, sub_y), sub_str, font=sub_font,
-                  fill=_hex_to_rgba(accent_col), anchor="lt")
+        sub_x = (W - sub_w) // 2
+        img.paste(sub_layer, (sub_x, sub_y), sub_layer)
 
     out = f"{job_dir}/text_overlay.png"
     img.save(out, "PNG")
