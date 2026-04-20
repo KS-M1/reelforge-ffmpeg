@@ -384,7 +384,7 @@ def _hex_to_rgba(hex_str: str, alpha: int = 255) -> tuple:
 
 
 def _render_text_to_layer(text: str, font: "ImageFont.FreeTypeFont", color: tuple,
-                          shadow_base: tuple, canvas_w: int = 2000, canvas_h: int = 1000) -> "Image.Image":
+                          shadow_base: tuple, canvas_w: int = 5000, canvas_h: int = 2000) -> "Image.Image":
     """
     Render text onto an oversized canvas, then auto-crop to actual pixel bounds.
     This guarantees NO clipping regardless of font descenders (g, y, j, p, etc.).
