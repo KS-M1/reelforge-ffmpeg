@@ -433,7 +433,7 @@ def _render_text_png(
     if font_size_override and font_size_override > 0:
         vid_fs = max(int(font_size_override), 8)
     else:
-        vid_fs = max(min(int(font_size * 1.5), 46), 36)
+        vid_fs = max(int(font_size * 4), 64)
     sub_fs = max(int(vid_fs * 0.55), 16)
 
     main_str = _apply_text_case(main_text or "", text_case)
