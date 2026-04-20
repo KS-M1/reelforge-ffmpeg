@@ -11,8 +11,9 @@ import shutil
 import subprocess
 import time
 import uuid
-import xml.sax.saxutils as _sax
 from typing import Optional, Union
+
+from PIL import Image, ImageDraw, ImageFont
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
@@ -372,6 +373,16 @@ def _build_vf_filters(
     )
 
 
+def _hex_to_rgba(hex_str: str, alpha: int = 255) -> tuple:
+    """Convert #rrggbb or #rrggbbaa hex to (r, g, b, a) tuple."""
+    h = hex_str.strip().lstrip("#")
+    if len(h) == 8:
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), int(h[6:8], 16))
+    if len(h) == 6:
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), alpha)
+    return (255, 255, 255, alpha)
+
+
 def _render_text_png(
     spec: dict,
     main_text: str,
@@ -381,13 +392,12 @@ def _render_text_png(
     text_animation: Optional[str] = None,
 ) -> str:
     """
-    Render hook text + subtitle to a transparent 1080×1920 RGBA PNG using
-    ImageMagick + Pango. Pango uses HarfBuzz for OpenType shaping — ligatures,
-    contextual alternates, and swashes render correctly for all fonts.
+    Render hook text + subtitle to a transparent 1080×1920 RGBA PNG using Pillow.
+    Pillow uses FreeType and supports TTF/OTF fonts directly — no ImageMagick
+    delegate dependencies required.
     Returns the path to the generated PNG.
     """
     font_family   = spec.get("font", "Oswald")
-    font_weight_n = spec.get("font_weight", 400)
     font_size     = spec.get("font_size", 28)
     text_color    = spec.get("text_color", "#ffffff")
     accent_col    = spec.get("accent_color", "#ffffff")
@@ -400,11 +410,37 @@ def _render_text_png(
         vid_fs = max(int(font_size_override), 8)
     else:
         vid_fs = max(min(int(font_size * 1.5), 46), 36)
-    sub_fs   = max(int(vid_fs * 0.55), 16)
-    block_h  = vid_fs + sub_fs + 28
+    sub_fs = max(int(vid_fs * 0.55), 16)
 
     main_str = _apply_text_case(main_text or "", text_case)
     sub_str  = subtitle or ""
+
+    # Resolve font path
+    font_path = FONT_FILES.get(font_family) or FALLBACK_FONT
+    if not font_path or not os.path.exists(font_path):
+        font_path = next((p for p in FONT_FILES.values() if os.path.exists(p)), None)
+
+    try:
+        main_font = ImageFont.truetype(font_path, vid_fs) if font_path else ImageFont.load_default()
+        sub_font  = ImageFont.truetype(font_path, sub_fs) if font_path else ImageFont.load_default()
+    except Exception:
+        main_font = ImageFont.load_default()
+        sub_font  = ImageFont.load_default()
+
+    img  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # Measure main text for centering
+    bbox    = draw.textbbox((0, 0), main_str, font=main_font)
+    text_w  = bbox[2] - bbox[0]
+    text_h  = bbox[3] - bbox[1]
+
+    sub_h = 0
+    if sub_str:
+        sb = draw.textbbox((0, 0), sub_str, font=sub_font)
+        sub_h = sb[3] - sb[1]
+
+    block_h = text_h + (28 + sub_h if sub_str else 0)
 
     if position == "top":
         main_y = 180
@@ -413,63 +449,33 @@ def _render_text_png(
     else:
         main_y = H - block_h - 280
 
-    div_y = main_y + vid_fs + 10
-    sub_y = main_y + vid_fs + 22
+    main_x = (W - text_w) // 2
 
+    # Shadow (offset +2, semi-transparent)
     is_dark    = int((text_color.strip("#") + "ff")[:2], 16) < 0x88
-    shadow_col = "#ffffff55" if is_dark else "#00000055"
+    shadow_rgb = (255, 255, 255, 85) if is_dark else (0, 0, 0, 85)
+    shadow_off = max(vid_fs // 20, 2)
+    draw.text((main_x + shadow_off, main_y + shadow_off), main_str, font=main_font, fill=shadow_rgb)
 
-    pw = "Bold" if font_weight_n >= 700 else ("Medium" if font_weight_n >= 500 else "Regular")
-
-    def _markup(text: str, color: str, size: int) -> str:
-        esc = _sax.escape(text)
-        # Pango size unit is 1/1024 pt
-        return (
-            f'<span font="{font_family} {pw}" '
-            f'size="{size * 1024}" '
-            f'foreground="{color}">{esc}</span>'
-        )
-
-    out = f"{job_dir}/text_overlay.png"
-
-    cmd = ["convert", "-size", f"{W}x{H}", "xc:none"]
-
-    # ── Shadow pass (offset +2+2) ─────────────────────────────────────────────
-    cmd += [
-        "(", "-background", "none",
-        f"pango:{_markup(main_str, shadow_col, vid_fs)}",
-        ")",
-        "-gravity", "North", "-geometry", f"+2+{main_y + 2}",
-        "-composite",
-    ]
-    # ── Main text ─────────────────────────────────────────────────────────────
-    cmd += [
-        "(", "-background", "none",
-        f"pango:{_markup(main_str, text_color, vid_fs)}",
-        ")",
-        "-gravity", "North", "-geometry", f"+0+{main_y}",
-        "-composite",
-    ]
+    # Main text
+    draw.text((main_x, main_y), main_str, font=main_font, fill=_hex_to_rgba(text_color))
 
     if sub_str:
-        # ── Accent divider line ───────────────────────────────────────────────
+        div_y = main_y + text_h + 10
+        sub_y = main_y + text_h + 22
+
+        # Accent divider
         div_x1 = (W - 160) // 2
         div_x2 = (W + 160) // 2
-        cmd += ["-fill", accent_col, "-draw", f"line {div_x1},{div_y} {div_x2},{div_y}"]
-        # ── Subtitle ─────────────────────────────────────────────────────────
-        cmd += [
-            "(", "-background", "none",
-            f"pango:{_markup(sub_str, accent_col, sub_fs)}",
-            ")",
-            "-gravity", "North", "-geometry", f"+0+{sub_y}",
-            "-composite",
-        ]
+        draw.line([(div_x1, div_y), (div_x2, div_y)], fill=_hex_to_rgba(accent_col), width=2)
 
-    cmd.append(out)
+        # Subtitle centered
+        sb      = draw.textbbox((0, 0), sub_str, font=sub_font)
+        sub_x   = (W - (sb[2] - sb[0])) // 2
+        draw.text((sub_x, sub_y), sub_str, font=sub_font, fill=_hex_to_rgba(accent_col))
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"ImageMagick text render failed: {result.stderr[-1000:]}")
+    out = f"{job_dir}/text_overlay.png"
+    img.save(out, "PNG")
     return out
 
 

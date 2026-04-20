@@ -6,8 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fontconfig \
     fonts-liberation fonts-noto \
     ca-certificates \
-    imagemagick \
-    libpango1.0-dev \
+    libfreetype6 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
