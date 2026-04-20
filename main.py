@@ -499,6 +499,13 @@ def _render_text_png(
     is_dark = int((text_color.strip("#") + "ff")[:2], 16) < 0x88
     s_base  = (255, 255, 255) if is_dark else (0, 0, 0)
 
+    # Subtitle color: same hue as main text but at 65% brightness
+    def _dim_color(hex_col: str, factor: float = 0.65) -> str:
+        r, g, b, _ = _hex_to_rgba(hex_col)
+        return "#{:02x}{:02x}{:02x}".format(int(r * factor), int(g * factor), int(b * factor))
+
+    sub_color = _dim_color(text_color, 0.65)
+
     # Render each text element to a tight auto-cropped layer
     main_layer = _render_text_to_layer(main_str, main_font, _hex_to_rgba(text_color), s_base)
     text_w, full_text_h = main_layer.size
@@ -506,7 +513,7 @@ def _render_text_png(
     sub_layer = None
     sub_w = sub_h = 0
     if sub_str:
-        sub_layer = _render_text_to_layer(sub_str, sub_font, _hex_to_rgba(accent_col), s_base)
+        sub_layer = _render_text_to_layer(sub_str, sub_font, _hex_to_rgba(sub_color), s_base)
         sub_w, sub_h = sub_layer.size
 
     block_h = full_text_h + (32 + sub_h if sub_str else 0)
@@ -534,7 +541,7 @@ def _render_text_png(
         div_x1 = (W - 160) // 2
         div_x2 = (W + 160) // 2
         draw.line([(div_x1, div_y), (div_x2, div_y)],
-                  fill=_hex_to_rgba(accent_col), width=2)
+                  fill=_hex_to_rgba(sub_color), width=2)
 
         # Subtitle centered
         sub_x = (W - sub_w) // 2
