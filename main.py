@@ -25,7 +25,7 @@ app = FastAPI(title="ReelForge FFmpeg Service")
 STITCH_STORE: dict[str, dict] = {}
 STITCH_TTL_S = 1800  # 30 minutes — auto-expire if /overlay never called
 
-FONT_DIR   = "/usr/local/share/fonts/google"
+FONT_DIR   = "/usr/local/share/fonts/reelforge"
 TMP_DIR    = "/tmp/reelforge"
 FFMPEG_BIN  = os.getenv("FFMPEG_BIN",  "ffmpeg")   # override for local macOS: /tmp/ffmpeg
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")  # override for local macOS: /tmp/ffprobe
@@ -65,11 +65,14 @@ FONT_FILES: dict[str, str] = {
     "Noto Serif":          f"{FONT_DIR}/NotoSerif-Italic.ttf",
     # Heritage uses Playfair Display 900 — resolve to nearest available weight
     "Playfair Display Black": f"{FONT_DIR}/PlayfairDisplay-Black.ttf",
+    # ── Custom licensed fonts (templates 29-30) ──────────────────────────────
+    "Helvena Grotesk":       f"{FONT_DIR}/helvena-bold.ttf",
+    "Guttery":               f"{FONT_DIR}/guttery.otf",
 }
 
 # Fallback font — checked in order, first one that exists wins
 _FALLBACK_CANDIDATES = [
-    "/usr/local/share/fonts/google/Oswald-Bold.ttf",                     # EasyPanel (downloaded)
+    "/usr/local/share/fonts/reelforge/Oswald-Bold.ttf",                  # bundled
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",      # Linux
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",              # Linux (Ubuntu/Debian)
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",                 # macOS
@@ -110,6 +113,9 @@ LEGACY_TEMPLATES: dict[str, dict] = {
     "eden":       {"font": "Pacifico",           "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 22, "text_color": "#dcfce7", "subtitle": "in bloom",       "accent_color": "#4ade80", "overlay": "rgba(5,50,20,0.58)"},
     "monaco":     {"font": "Unbounded",          "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 16, "text_color": "#93c5fd", "subtitle": "prestige",       "accent_color": "#3b82f6", "overlay": "rgba(0,20,60,0.72)"},
     "bloom":      {"font": "Noto Serif",         "font_weight": 400, "italic": True,  "text_case": "lower", "font_size": 28, "text_color": "#fff0f5", "subtitle": "in full bloom",  "accent_color": "#fb7185", "overlay": "rgba(200,50,80,0.35)"},
+    # ── Templates 29-30 ──────────────────────────────────────────────────────
+    "toronto":    {"font": "Helvena Grotesk",    "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 26, "text_color": "#ffffff", "subtitle": "modern city",    "accent_color": "#e2e8f0", "overlay": "rgba(0,0,0,0.65)"},
+    "havana":     {"font": "Guttery",            "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 32, "text_color": "#fff9ed", "subtitle": "vida loca",      "accent_color": "#fbbf24", "overlay": "rgba(100,30,0,0.45)"},
 }
 
 
@@ -311,10 +317,10 @@ def _build_vf_filters(
         chroma_filter = ",rgbashift=rh=-4:bh=4:edge=smear"
 
     # ── Font size + vertical placement ────────────────────────────────────────
-    # If caller set a manual override, use it directly (clamped to 16-72).
+    # If caller set a manual override, use it directly (min 8px, no upper cap).
     # Otherwise scale template base size by 1.5× and clamp to 36-46px.
     if font_size_override and font_size_override > 0:
-        vid_font_size = max(min(int(font_size_override), 72), 16)
+        vid_font_size = max(int(font_size_override), 8)
     else:
         vid_font_size = max(min(int(font_size * 1.5), 46), 36)
     sub_size = max(int(vid_font_size * 0.55), 16)  # proportional to main — scales with font size
@@ -650,7 +656,7 @@ class OverlayRequest(BaseModel):
     # Visual effects
     effects:       Optional[EffectsConfig] = None
     # Manual overrides — take priority over template + AI values
-    font_size_override: Optional[int] = None   # 16-72px; bypasses template font_size + multiplier
+    font_size_override: Optional[int] = None   # 8–200px; bypasses template font_size + multiplier
 
 
 def _get_clip_duration(path: str) -> float:
