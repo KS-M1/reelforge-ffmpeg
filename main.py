@@ -86,38 +86,38 @@ FALLBACK_FONT = next((p for p in _FALLBACK_CANDIDATES if os.path.exists(p)), "")
 
 # Legacy template presets (for backward-compat when template is sent as a string ID)
 LEGACY_TEMPLATES: dict[str, dict] = {
-    "milan":      {"font": "Oswald",            "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 28, "text_color": "#fff",    "subtitle": "fashion week",    "accent_color": "#ffffff", "overlay": "rgba(0,0,0,0.40)"},
-    "tokyo":      {"font": "Zilla Slab",         "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 26, "text_color": "#00ff88", "subtitle": "next level",      "accent_color": "#00ff88", "overlay": "rgba(0,0,0,0.75)"},
-    "austin":     {"font": "Cormorant Garamond", "font_weight": 300, "italic": False, "text_case": "none",  "font_size": 28, "text_color": "#fff",    "subtitle": "aire pro",        "accent_color": "#e5e7eb", "overlay": "rgba(0,0,0,0.28)"},
-    "dubai":      {"font": "Cinzel",             "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 22, "text_color": "#FFD700", "subtitle": "luxury edition",  "accent_color": "#FFD700", "overlay": "rgba(10,8,0,0.60)"},
-    "berlin":     {"font": "Courier Prime",      "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 20, "text_color": "#ffffff", "subtitle": "minimal.",        "accent_color": "#9ca3af", "overlay": "rgba(0,0,0,0.80)"},
-    "sydney":     {"font": "Raleway",            "font_weight": 100, "italic": False, "text_case": "lower", "font_size": 28, "text_color": "#ffffff", "subtitle": "coastal vibes",   "accent_color": "#38bdf8", "overlay": "rgba(2,78,120,0.62)"},
-    "newyork":    {"font": "Bodoni Moda",        "font_weight": 900, "italic": False, "text_case": "lower", "font_size": 22, "text_color": "#ffffff", "subtitle": "narcisa",         "accent_color": "#ffffff", "overlay": "rgba(0,0,0,0.52)"},
-    "paris":      {"font": "Libre Baskerville",  "font_weight": 400, "italic": True,  "text_case": "none",  "font_size": 26, "text_color": "#f8e1f4", "subtitle": "joie de vivre",   "accent_color": "#f8e1f4", "overlay": "rgba(50,10,50,0.55)"},
-    "barcelona":  {"font": "Bebas Neue",         "font_weight": 400, "italic": False, "text_case": "upper", "font_size": 20, "text_color": "#c7d2fe", "subtitle": "butler",          "accent_color": "#818cf8", "overlay": "rgba(20,18,80,0.65)"},
-    "chicago":    {"font": "EB Garamond",        "font_weight": 400, "italic": False, "text_case": "lower", "font_size": 28, "text_color": "#fef3c7", "subtitle": "garamond",        "accent_color": "#fde68a", "overlay": "rgba(0,0,0,0.65)"},
-    "rome":       {"font": "Roboto Slab",        "font_weight": 300, "italic": True,  "text_case": "lower", "font_size": 28, "text_color": "#d4a96a", "subtitle": "roboto slab",     "accent_color": "#d4a96a", "overlay": "rgba(60,30,0,0.52)"},
-    "dallas":     {"font": "Crimson Text",       "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 26, "text_color": "#ffffff", "subtitle": "crimson text",    "accent_color": "#ef4444", "overlay": "rgba(0,0,0,0.52)"},
-    "istanbul":   {"font": "Lora",               "font_weight": 600, "italic": False, "text_case": "upper", "font_size": 19, "text_color": "#fef3c7", "subtitle": "lora",            "accent_color": "#fb923c", "overlay": "rgba(120,40,5,0.60)"},
-    "losangeles": {"font": "Josefin Sans",       "font_weight": 100, "italic": False, "text_case": "none",  "font_size": 22, "text_color": "#ffffff", "subtitle": "josefin sans",    "accent_color": "#7dd3fc", "overlay": "rgba(2,60,110,0.50)"},
-    "london":     {"font": "DM Serif Display",   "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 28, "text_color": "#ffffff", "subtitle": "dm serif",        "accent_color": "#d1d5db", "overlay": "rgba(20,25,40,0.70)"},
-    "madrid":     {"font": "Abril Fatface",      "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 28, "text_color": "#ffffff", "subtitle": "abril fatface",   "accent_color": "#f87171", "overlay": "rgba(130,5,5,0.58)"},
-    "amsterdam":  {"font": "Cardo",              "font_weight": 400, "italic": True,  "text_case": "lower", "font_size": 26, "text_color": "#fef9c3", "subtitle": "cardo",           "accent_color": "#86efac", "overlay": "rgba(10,50,20,0.62)"},
-    "singapore":  {"font": "Montserrat",         "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 16, "text_color": "#ffffff", "subtitle": "montserrat",      "accent_color": "#e879f9", "overlay": "rgba(80,0,100,0.68)"},
-    "mumbai":     {"font": "Spectral",           "font_weight": 300, "italic": True,  "text_case": "none",  "font_size": 28, "text_color": "#FFD700", "subtitle": "spectral",        "accent_color": "#fb923c", "overlay": "rgba(120,60,0,0.54)"},
-    "vienna":     {"font": "Playfair Display",   "font_weight": 700, "italic": True,  "text_case": "none",  "font_size": 26, "text_color": "#f8e1f4", "subtitle": "playfair display","accent_color": "#e879f9", "overlay": "rgba(25,5,45,0.68)"},
+    "milan":      {"font": "Oswald",            "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 112, "text_color": "#fff",    "subtitle": "fashion week",    "accent_color": "#ffffff", "overlay": "rgba(0,0,0,0.40)"},
+    "tokyo":      {"font": "Zilla Slab",         "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 104, "text_color": "#00ff88", "subtitle": "next level",      "accent_color": "#00ff88", "overlay": "rgba(0,0,0,0.75)"},
+    "austin":     {"font": "Cormorant Garamond", "font_weight": 300, "italic": False, "text_case": "none",  "font_size": 112, "text_color": "#fff",    "subtitle": "aire pro",        "accent_color": "#e5e7eb", "overlay": "rgba(0,0,0,0.28)"},
+    "dubai":      {"font": "Cinzel",             "font_weight": 700, "italic": False, "text_case": "upper", "font_size":  88, "text_color": "#FFD700", "subtitle": "luxury edition",  "accent_color": "#FFD700", "overlay": "rgba(10,8,0,0.60)"},
+    "berlin":     {"font": "Courier Prime",      "font_weight": 700, "italic": False, "text_case": "upper", "font_size":  80, "text_color": "#ffffff", "subtitle": "minimal.",        "accent_color": "#9ca3af", "overlay": "rgba(0,0,0,0.80)"},
+    "sydney":     {"font": "Raleway",            "font_weight": 100, "italic": False, "text_case": "lower", "font_size": 112, "text_color": "#ffffff", "subtitle": "coastal vibes",   "accent_color": "#38bdf8", "overlay": "rgba(2,78,120,0.62)"},
+    "newyork":    {"font": "Bodoni Moda",        "font_weight": 900, "italic": False, "text_case": "lower", "font_size":  88, "text_color": "#ffffff", "subtitle": "narcisa",         "accent_color": "#ffffff", "overlay": "rgba(0,0,0,0.52)"},
+    "paris":      {"font": "Libre Baskerville",  "font_weight": 400, "italic": True,  "text_case": "none",  "font_size": 104, "text_color": "#f8e1f4", "subtitle": "joie de vivre",   "accent_color": "#f8e1f4", "overlay": "rgba(50,10,50,0.55)"},
+    "barcelona":  {"font": "Bebas Neue",         "font_weight": 400, "italic": False, "text_case": "upper", "font_size":  80, "text_color": "#c7d2fe", "subtitle": "butler",          "accent_color": "#818cf8", "overlay": "rgba(20,18,80,0.65)"},
+    "chicago":    {"font": "EB Garamond",        "font_weight": 400, "italic": False, "text_case": "lower", "font_size": 112, "text_color": "#fef3c7", "subtitle": "garamond",        "accent_color": "#fde68a", "overlay": "rgba(0,0,0,0.65)"},
+    "rome":       {"font": "Roboto Slab",        "font_weight": 300, "italic": True,  "text_case": "lower", "font_size": 112, "text_color": "#d4a96a", "subtitle": "roboto slab",     "accent_color": "#d4a96a", "overlay": "rgba(60,30,0,0.52)"},
+    "dallas":     {"font": "Crimson Text",       "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 104, "text_color": "#ffffff", "subtitle": "crimson text",    "accent_color": "#ef4444", "overlay": "rgba(0,0,0,0.52)"},
+    "istanbul":   {"font": "Lora",               "font_weight": 600, "italic": False, "text_case": "upper", "font_size":  88, "text_color": "#fef3c7", "subtitle": "lora",            "accent_color": "#fb923c", "overlay": "rgba(120,40,5,0.60)"},
+    "losangeles": {"font": "Josefin Sans",       "font_weight": 100, "italic": False, "text_case": "none",  "font_size":  96, "text_color": "#ffffff", "subtitle": "josefin sans",    "accent_color": "#7dd3fc", "overlay": "rgba(2,60,110,0.50)"},
+    "london":     {"font": "DM Serif Display",   "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 112, "text_color": "#ffffff", "subtitle": "dm serif",        "accent_color": "#d1d5db", "overlay": "rgba(20,25,40,0.70)"},
+    "madrid":     {"font": "Abril Fatface",      "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 112, "text_color": "#ffffff", "subtitle": "abril fatface",   "accent_color": "#f87171", "overlay": "rgba(130,5,5,0.58)"},
+    "amsterdam":  {"font": "Cardo",              "font_weight": 400, "italic": True,  "text_case": "lower", "font_size": 104, "text_color": "#fef9c3", "subtitle": "cardo",           "accent_color": "#86efac", "overlay": "rgba(10,50,20,0.62)"},
+    "singapore":  {"font": "Montserrat",         "font_weight": 700, "italic": False, "text_case": "upper", "font_size":  80, "text_color": "#ffffff", "subtitle": "montserrat",      "accent_color": "#e879f9", "overlay": "rgba(80,0,100,0.68)"},
+    "mumbai":     {"font": "Spectral",           "font_weight": 300, "italic": True,  "text_case": "none",  "font_size": 112, "text_color": "#FFD700", "subtitle": "spectral",        "accent_color": "#fb923c", "overlay": "rgba(120,60,0,0.54)"},
+    "vienna":     {"font": "Playfair Display",   "font_weight": 700, "italic": True,  "text_case": "none",  "font_size": 112, "text_color": "#f8e1f4", "subtitle": "playfair display","accent_color": "#e879f9", "overlay": "rgba(25,5,45,0.68)"},
     # ── Templates 21-28 ───────────────────────────────────────────────────────
-    "coastal":    {"font": "Great Vibes",        "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 30, "text_color": "#fff8f0", "subtitle": "golden hour",    "accent_color": "#fbbf24", "overlay": "rgba(80,30,0,0.45)"},
-    "capri":      {"font": "Dancing Script",     "font_weight": 700, "italic": False, "text_case": "none",  "font_size": 28, "text_color": "#e0f2fe", "subtitle": "la dolce vita",  "accent_color": "#7dd3fc", "overlay": "rgba(5,50,90,0.50)"},
-    "heritage":   {"font": "Playfair Display",   "font_weight": 900, "italic": False, "text_case": "upper", "font_size": 20, "text_color": "#d4a96a", "subtitle": "old money",      "accent_color": "#d4a96a", "overlay": "rgba(0,0,0,0.68)"},
-    "editorial":  {"font": "Italiana",           "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 32, "text_color": "#ffffff", "subtitle": "fashion week",   "accent_color": "#f3f4f6", "overlay": "rgba(0,0,0,0.62)"},
-    "noir":       {"font": "Anton",              "font_weight": 400, "italic": False, "text_case": "upper", "font_size": 28, "text_color": "#ffffff", "subtitle": "cinematic",      "accent_color": "#ffffff", "overlay": "rgba(0,0,0,0.80)"},
-    "eden":       {"font": "Pacifico",           "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 22, "text_color": "#dcfce7", "subtitle": "in bloom",       "accent_color": "#4ade80", "overlay": "rgba(5,50,20,0.58)"},
-    "monaco":     {"font": "Unbounded",          "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 16, "text_color": "#93c5fd", "subtitle": "prestige",       "accent_color": "#3b82f6", "overlay": "rgba(0,20,60,0.72)"},
-    "bloom":      {"font": "Noto Serif",         "font_weight": 400, "italic": True,  "text_case": "lower", "font_size": 28, "text_color": "#fff0f5", "subtitle": "in full bloom",  "accent_color": "#fb7185", "overlay": "rgba(200,50,80,0.35)"},
+    "coastal":    {"font": "Great Vibes",        "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 128, "text_color": "#fff8f0", "subtitle": "golden hour",    "accent_color": "#fbbf24", "overlay": "rgba(80,30,0,0.45)"},
+    "capri":      {"font": "Dancing Script",     "font_weight": 700, "italic": False, "text_case": "none",  "font_size": 120, "text_color": "#e0f2fe", "subtitle": "la dolce vita",  "accent_color": "#7dd3fc", "overlay": "rgba(5,50,90,0.50)"},
+    "heritage":   {"font": "Playfair Display",   "font_weight": 900, "italic": False, "text_case": "upper", "font_size":  88, "text_color": "#d4a96a", "subtitle": "old money",      "accent_color": "#d4a96a", "overlay": "rgba(0,0,0,0.68)"},
+    "editorial":  {"font": "Italiana",           "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 128, "text_color": "#ffffff", "subtitle": "fashion week",   "accent_color": "#f3f4f6", "overlay": "rgba(0,0,0,0.62)"},
+    "noir":       {"font": "Anton",              "font_weight": 400, "italic": False, "text_case": "upper", "font_size": 112, "text_color": "#ffffff", "subtitle": "cinematic",      "accent_color": "#ffffff", "overlay": "rgba(0,0,0,0.80)"},
+    "eden":       {"font": "Pacifico",           "font_weight": 400, "italic": False, "text_case": "none",  "font_size":  96, "text_color": "#dcfce7", "subtitle": "in bloom",       "accent_color": "#4ade80", "overlay": "rgba(5,50,20,0.58)"},
+    "monaco":     {"font": "Unbounded",          "font_weight": 700, "italic": False, "text_case": "upper", "font_size":  72, "text_color": "#93c5fd", "subtitle": "prestige",       "accent_color": "#3b82f6", "overlay": "rgba(0,20,60,0.72)"},
+    "bloom":      {"font": "Noto Serif",         "font_weight": 400, "italic": True,  "text_case": "lower", "font_size": 112, "text_color": "#fff0f5", "subtitle": "in full bloom",  "accent_color": "#fb7185", "overlay": "rgba(200,50,80,0.35)"},
     # ── Templates 29-30 ──────────────────────────────────────────────────────
-    "toronto":    {"font": "Helvena Grotesk",    "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 26, "text_color": "#ffffff", "subtitle": "modern city",    "accent_color": "#e2e8f0", "overlay": "rgba(0,0,0,0.65)"},
-    "havana":     {"font": "Guttery",            "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 32, "text_color": "#fff9ed", "subtitle": "vida loca",      "accent_color": "#fbbf24", "overlay": "rgba(100,30,0,0.45)"},
+    "toronto":    {"font": "Helvena Grotesk",    "font_weight": 700, "italic": False, "text_case": "upper", "font_size": 104, "text_color": "#ffffff", "subtitle": "modern city",    "accent_color": "#e2e8f0", "overlay": "rgba(0,0,0,0.65)"},
+    "havana":     {"font": "Guttery",            "font_weight": 400, "italic": False, "text_case": "none",  "font_size": 128, "text_color": "#fff9ed", "subtitle": "vida loca",      "accent_color": "#fbbf24", "overlay": "rgba(100,30,0,0.45)"},
 }
 
 
@@ -319,7 +319,7 @@ def _build_vf_filters(
     if font_size_override and font_size_override > 0:
         vid_font_size = max(int(font_size_override), 8)
     else:
-        vid_font_size = max(min(int(font_size * 1.5), 46), 36)
+        vid_font_size = max(int(font_size), 40)
     sub_size     = max(int(vid_font_size * 0.55), 16)
     text_block_h = vid_font_size + sub_size + 28
 
@@ -462,7 +462,7 @@ def _render_text_png(
     if font_size_override and font_size_override > 0:
         vid_fs = max(int(font_size_override), 8)
     else:
-        vid_fs = max(int(font_size * 4), 64)
+        vid_fs = max(int(font_size), 40)
 
     main_str = _apply_text_case(main_text or "", text_case)
     sub_str  = subtitle or ""
