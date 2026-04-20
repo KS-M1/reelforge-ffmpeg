@@ -417,10 +417,10 @@ def _render_text_to_layer(text: str, font: "ImageFont.FreeTypeFont", color: tupl
 
     for off, alpha in [(5, 30), (3, 55), (1, 40)]:
         d.multiline_text((ox + off, oy + off), text, font=font,
-                         fill=(*shadow_base, alpha), anchor="lt",
+                         fill=(*shadow_base, alpha),
                          align="center", spacing=spacing)
     d.multiline_text((ox, oy), text, font=font, fill=color,
-                     anchor="lt", align="center", spacing=spacing)
+                     align="center", spacing=spacing)
 
     bounds = tmp.getbbox()
     if not bounds:
