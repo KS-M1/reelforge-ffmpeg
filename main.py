@@ -393,16 +393,15 @@ def _render_text_png(
 ) -> str:
     """
     Render hook text + subtitle to a transparent 1080×1920 RGBA PNG using Pillow.
-    Pillow uses FreeType and supports TTF/OTF fonts directly — no ImageMagick
-    delegate dependencies required.
-    Returns the path to the generated PNG.
+    Includes descent padding so letters like g/p/y are never clipped, and
+    a polished multi-layer drop shadow for depth.
     """
-    font_family   = spec.get("font", "Oswald")
-    font_size     = spec.get("font_size", 28)
-    text_color    = spec.get("text_color", "#ffffff")
-    accent_col    = spec.get("accent_color", "#ffffff")
-    subtitle      = spec.get("subtitle", "")
-    text_case     = spec.get("text_case", "none")
+    font_family = spec.get("font", "Oswald")
+    font_size   = spec.get("font_size", 28)
+    text_color  = spec.get("text_color", "#ffffff")
+    accent_col  = spec.get("accent_color", "#ffffff")
+    subtitle    = spec.get("subtitle", "")
+    text_case   = spec.get("text_case", "none")
 
     W, H = 1080, 1920
 
@@ -430,17 +429,28 @@ def _render_text_png(
     img  = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # Measure main text for centering
-    bbox    = draw.textbbox((0, 0), main_str, font=main_font)
-    text_w  = bbox[2] - bbox[0]
-    text_h  = bbox[3] - bbox[1]
+    # ── Measure text using anchor="lt" so bbox coords are always positive ──────
+    bbox   = draw.textbbox((0, 0), main_str, font=main_font, anchor="lt")
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+
+    # Descent padding: use font metrics + generous extra so script/handwritten
+    # descenders (g, y, j, p in fonts like Guttery) are never clipped.
+    try:
+        ascent, descent = main_font.getmetrics()
+        # descent from getmetrics is the space below baseline already in bbox,
+        # but script fonts often exceed it — add 40% of font size as safe buffer.
+        descent_pad = abs(descent) + int(vid_fs * 0.40)
+    except Exception:
+        descent_pad = int(vid_fs * 0.45)
+    full_text_h = text_h + descent_pad
 
     sub_h = 0
     if sub_str:
-        sb = draw.textbbox((0, 0), sub_str, font=sub_font)
+        sb    = draw.textbbox((0, 0), sub_str, font=sub_font, anchor="lt")
         sub_h = sb[3] - sb[1]
 
-    block_h = text_h + (28 + sub_h if sub_str else 0)
+    block_h = full_text_h + (32 + sub_h if sub_str else 0)
 
     if position == "top":
         main_y = 180
@@ -451,28 +461,34 @@ def _render_text_png(
 
     main_x = (W - text_w) // 2
 
-    # Shadow (offset +2, semi-transparent)
-    is_dark    = int((text_color.strip("#") + "ff")[:2], 16) < 0x88
-    shadow_rgb = (255, 255, 255, 85) if is_dark else (0, 0, 0, 85)
-    shadow_off = max(vid_fs // 20, 2)
-    draw.text((main_x + shadow_off, main_y + shadow_off), main_str, font=main_font, fill=shadow_rgb)
+    # ── Multi-layer drop shadow — gives depth without a background box ────────
+    is_dark = int((text_color.strip("#") + "ff")[:2], 16) < 0x88
+    s_base  = (255, 255, 255) if is_dark else (0, 0, 0)
+    for off, alpha in [(5, 30), (3, 55), (1, 40)]:
+        draw.text(
+            (main_x + off, main_y + off), main_str,
+            font=main_font, fill=(*s_base, alpha), anchor="lt",
+        )
 
-    # Main text
-    draw.text((main_x, main_y), main_str, font=main_font, fill=_hex_to_rgba(text_color))
+    # ── Main text ─────────────────────────────────────────────────────────────
+    draw.text((main_x, main_y), main_str, font=main_font,
+              fill=_hex_to_rgba(text_color), anchor="lt")
 
     if sub_str:
-        div_y = main_y + text_h + 10
-        sub_y = main_y + text_h + 22
+        div_y  = main_y + full_text_h + 10
+        sub_y  = main_y + full_text_h + 22
 
         # Accent divider
         div_x1 = (W - 160) // 2
         div_x2 = (W + 160) // 2
-        draw.line([(div_x1, div_y), (div_x2, div_y)], fill=_hex_to_rgba(accent_col), width=2)
+        draw.line([(div_x1, div_y), (div_x2, div_y)],
+                  fill=_hex_to_rgba(accent_col), width=2)
 
         # Subtitle centered
-        sb      = draw.textbbox((0, 0), sub_str, font=sub_font)
-        sub_x   = (W - (sb[2] - sb[0])) // 2
-        draw.text((sub_x, sub_y), sub_str, font=sub_font, fill=_hex_to_rgba(accent_col))
+        sb    = draw.textbbox((0, 0), sub_str, font=sub_font, anchor="lt")
+        sub_x = (W - (sb[2] - sb[0])) // 2
+        draw.text((sub_x, sub_y), sub_str, font=sub_font,
+                  fill=_hex_to_rgba(accent_col), anchor="lt")
 
     out = f"{job_dir}/text_overlay.png"
     img.save(out, "PNG")
