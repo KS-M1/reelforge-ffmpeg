@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import time
 import uuid
+import xml.sax.saxutils as _sax
 from typing import Optional, Union
 
 import httpx
@@ -248,9 +249,6 @@ def _build_vf_filters(
     accent_col = spec.get("accent_color", "#ffffff")
     subtitle   = spec.get("subtitle", "")
 
-    main_safe = _escape_drawtext(main_text or "")
-    sub_safe  = _escape_drawtext(subtitle or "")
-
     # ── 1. Scale + pad ─────────────────────────────────────────────────────────
     scale_pad = (
         "scale=1080:1920:force_original_aspect_ratio=decrease,"
@@ -316,27 +314,22 @@ def _build_vf_filters(
     if effects and effects.chromatic_aberration:
         chroma_filter = ",rgbashift=rh=-4:bh=4:edge=smear"
 
-    # ── Font size + vertical placement ────────────────────────────────────────
-    # If caller set a manual override, use it directly (min 8px, no upper cap).
-    # Otherwise scale template base size by 1.5× and clamp to 36-46px.
+    # ── Font size + vertical placement (needed for band positioning) ─────────
     if font_size_override and font_size_override > 0:
         vid_font_size = max(int(font_size_override), 8)
     else:
         vid_font_size = max(min(int(font_size * 1.5), 46), 36)
-    sub_size = max(int(vid_font_size * 0.55), 16)  # proportional to main — scales with font size
-    text_block_h  = vid_font_size + sub_size + 28
+    sub_size     = max(int(vid_font_size * 0.55), 16)
+    text_block_h = vid_font_size + sub_size + 28
 
     if position == "top":
-        main_y_px = 180   # was 120 — give safe distance from top edge
+        main_y_px = 180
     elif position == "center":
         main_y_px = (VIDEO_H - text_block_h) // 2
     else:
         main_y_px = VIDEO_H - text_block_h - 280
 
-    div_y_px = main_y_px + vid_font_size + 10
-    sub_y_px = main_y_px + vid_font_size + 22
-
-    # ── Overlay band behind text (replaces border-stroke highlight) ────────────
+    # ── Overlay band behind text ──────────────────────────────────────────────
     # Parse the template's overlay color (e.g. "rgba(0,0,0,0.55)") and draw a
     # semi-transparent rectangle behind the text block so the text sits cleanly
     # on a colored band rather than relying on a thick stroke for contrast.
@@ -356,65 +349,7 @@ def _build_vf_filters(
                 f":color={band_color}:t=fill"
             )
 
-    # ── Readability: stroke + shadow ──────────────────────────────────────────
-    # Keep a thin border (1px) for extra sharpness but no thick highlight stroke
-    tc_ffmpeg    = _hex_to_rgba(text_color)
-    is_dark_text = int(text_color.strip().lstrip("#")[:2] or "ff", 16) < 0x88
-    border_color = "white@0.45" if is_dark_text else "black@0.45"
-    shadow_color = "white@0.35" if is_dark_text else "black@0.35"
-
-    # ── 6. Main hook text ──────────────────────────────────────────────────────
-    use_slide_up = effects and effects.text_animation == "slide_up"
-    if use_slide_up:
-        slide_dist = VIDEO_H - main_y_px
-        y_expr     = f"if(lt(t\\,0.5)\\,{main_y_px}+{slide_dist}*(1-t/0.5)\\,{main_y_px})"
-        main_filter = (
-            f"drawtext=fontfile='{font_path}'"
-            f":text='{main_safe}'"
-            f":fontsize={vid_font_size}"
-            f":fontcolor={tc_ffmpeg}"
-            ":x=(w-text_w)/2"
-            f":y={y_expr}"
-            f":borderw=1:bordercolor={border_color}"
-            f":shadowcolor={shadow_color}"
-            ":shadowx=2:shadowy=2"
-            ":line_spacing=4"
-        )
-    else:
-        main_filter = (
-            f"drawtext=fontfile='{font_path}'"
-            f":text='{main_safe}'"
-            f":fontsize={vid_font_size}"
-            f":fontcolor={tc_ffmpeg}"
-            ":x=(w-text_w)/2"
-            f":y={main_y_px}"
-            f":borderw=1:bordercolor={border_color}"
-            f":shadowcolor={shadow_color}"
-            ":shadowx=2:shadowy=2"
-            ":line_spacing=4"
-        )
-
-    # ── 7. Accent divider + subtitle ──────────────────────────────────────────
-    extra_filters = ""
-    if subtitle:
-        ac_ffmpeg     = _hex_to_rgba(accent_col)
-        ac_ffmpeg_sub = _hex_to_rgba(accent_col, 0.92)
-        div_x         = (VIDEO_W - 160) // 2
-        extra_filters = (
-            f",drawbox=x={div_x}:y={div_y_px}:w=160:h=2:color={ac_ffmpeg}:thickness=fill"
-            f",drawtext=fontfile='{font_path}'"
-            f":text='{sub_safe}'"
-            f":fontsize={sub_size}"
-            f":fontcolor={ac_ffmpeg_sub}"
-            ":x=(w-text_w)/2"
-            f":y={sub_y_px}"
-            f":borderw=1:bordercolor={border_color}"
-            f":shadowcolor={shadow_color}"
-            ":shadowx=2:shadowy=2"
-            ":line_spacing=4"
-        )
-
-    # ── 8. Cinematic bars ──────────────────────────────────────────────────────
+    # ── 6. Cinematic bars ──────────────────────────────────────────────────────
     # 80px black bars top and bottom — stylistic letterbox for vertical video.
     # Applied last so they always overlay text (text stays inside bars-free zone).
     bars_filter = ""
@@ -424,17 +359,118 @@ def _build_vf_filters(
             ",drawbox=x=0:y=1840:w=1080:h=80:color=black:t=fill"
         )
 
+    # Text is now rendered as a PNG by _render_text_png (ImageMagick + Pango)
+    # and composited by _apply_overlay — no drawtext here.
     return (
         f"{scale_pad}"
         f"{color_grade_filter}"
         f"{vignette_filter}"
         f"{grain_filter}"
         f"{chroma_filter}"
-        f"{band_filter}"        # overlay band behind text — drawn before text
-        f",{main_filter}"
-        f"{extra_filters}"
+        f"{band_filter}"
         f"{bars_filter}"
     )
+
+
+def _render_text_png(
+    spec: dict,
+    main_text: str,
+    position: str,
+    font_size_override: Optional[int],
+    job_dir: str,
+    text_animation: Optional[str] = None,
+) -> str:
+    """
+    Render hook text + subtitle to a transparent 1080×1920 RGBA PNG using
+    ImageMagick + Pango. Pango uses HarfBuzz for OpenType shaping — ligatures,
+    contextual alternates, and swashes render correctly for all fonts.
+    Returns the path to the generated PNG.
+    """
+    font_family   = spec.get("font", "Oswald")
+    font_weight_n = spec.get("font_weight", 400)
+    font_size     = spec.get("font_size", 28)
+    text_color    = spec.get("text_color", "#ffffff")
+    accent_col    = spec.get("accent_color", "#ffffff")
+    subtitle      = spec.get("subtitle", "")
+    text_case     = spec.get("text_case", "none")
+
+    W, H = 1080, 1920
+
+    if font_size_override and font_size_override > 0:
+        vid_fs = max(int(font_size_override), 8)
+    else:
+        vid_fs = max(min(int(font_size * 1.5), 46), 36)
+    sub_fs   = max(int(vid_fs * 0.55), 16)
+    block_h  = vid_fs + sub_fs + 28
+
+    main_str = _apply_text_case(main_text or "", text_case)
+    sub_str  = subtitle or ""
+
+    if position == "top":
+        main_y = 180
+    elif position == "center":
+        main_y = (H - block_h) // 2
+    else:
+        main_y = H - block_h - 280
+
+    div_y = main_y + vid_fs + 10
+    sub_y = main_y + vid_fs + 22
+
+    is_dark    = int((text_color.strip("#") + "ff")[:2], 16) < 0x88
+    shadow_col = "#ffffff55" if is_dark else "#00000055"
+
+    pw = "Bold" if font_weight_n >= 700 else ("Medium" if font_weight_n >= 500 else "Regular")
+
+    def _markup(text: str, color: str, size: int) -> str:
+        esc = _sax.escape(text)
+        # Pango size unit is 1/1024 pt
+        return (
+            f'<span font="{font_family} {pw}" '
+            f'size="{size * 1024}" '
+            f'foreground="{color}">{esc}</span>'
+        )
+
+    out = f"{job_dir}/text_overlay.png"
+
+    cmd = ["convert", "-size", f"{W}x{H}", "xc:none"]
+
+    # ── Shadow pass (offset +2+2) ─────────────────────────────────────────────
+    cmd += [
+        "(", "-background", "none",
+        f"pango:{_markup(main_str, shadow_col, vid_fs)}",
+        ")",
+        "-gravity", "North", "-geometry", f"+2+{main_y + 2}",
+        "-composite",
+    ]
+    # ── Main text ─────────────────────────────────────────────────────────────
+    cmd += [
+        "(", "-background", "none",
+        f"pango:{_markup(main_str, text_color, vid_fs)}",
+        ")",
+        "-gravity", "North", "-geometry", f"+0+{main_y}",
+        "-composite",
+    ]
+
+    if sub_str:
+        # ── Accent divider line ───────────────────────────────────────────────
+        div_x1 = (W - 160) // 2
+        div_x2 = (W + 160) // 2
+        cmd += ["-fill", accent_col, "-draw", f"line {div_x1},{div_y} {div_x2},{div_y}"]
+        # ── Subtitle ─────────────────────────────────────────────────────────
+        cmd += [
+            "(", "-background", "none",
+            f"pango:{_markup(sub_str, accent_col, sub_fs)}",
+            ")",
+            "-gravity", "North", "-geometry", f"+0+{sub_y}",
+            "-composite",
+        ]
+
+    cmd.append(out)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ImageMagick text render failed: {result.stderr[-1000:]}")
+    return out
 
 
 async def _download(url: str, dest: str, headers: Optional[dict] = None) -> None:
@@ -922,8 +958,14 @@ def _apply_overlay(stitched: str, job_dir: str, crf: int,
                    music_headers: Optional[dict] = None,
                    font_size_override: Optional[int] = None) -> str:
     """Apply text overlay (and optional music) to stitched video. Returns output path."""
-    output = f"{job_dir}/output.mp4"
-    vf     = _build_vf_filters(spec, main_text, position, has_music=bool(music_url), effects=effects, font_size_override=font_size_override)
+    output   = f"{job_dir}/output.mp4"
+    text_anim = (effects.text_animation if effects else None)
+
+    # ── Render text as transparent PNG via ImageMagick + Pango (full OpenType) ─
+    text_png = _render_text_png(spec, main_text, position, font_size_override, job_dir, text_anim)
+
+    # ── Build effects-only VF chain (no drawtext) ─────────────────────────────
+    vf = _build_vf_filters(spec, main_text, position, has_music=bool(music_url), effects=effects, font_size_override=font_size_override)
 
     if music_url:
         music_path = f"{job_dir}/music.mp3"
@@ -939,43 +981,44 @@ def _apply_overlay(stitched: str, job_dir: str, crf: int,
             capture_output=True, text=True,
         )
         has_audio = "audio" in probe.stdout
+        # input 0=video  1=text_png  2=music
+        audio_idx = 2
         audio_filter = (
-            # Clips have original audio: mix with background music at 25% volume.
-            # duration=first ties mix length to video audio; dropout_transition=3 fades
-            # music gracefully when it ends before video.
-            "[1:a]volume=0.25[music];[0:a][music]amix=inputs=2:duration=first:dropout_transition=3[a]"
+            f"[{audio_idx}:a]volume=0.25[music];[0:a][music]amix=inputs=2:duration=first:dropout_transition=3[a]"
             if has_audio else
-            # Clips have no audio: loop music indefinitely so it always covers the
-            # full video length. -shortest stops output at video end, no overrun.
-            "[1:a]volume=0.25,aloop=loop=-1:size=2e+09[a]"
+            f"[{audio_idx}:a]volume=0.25,aloop=loop=-1:size=2e+09[a]"
         )
         _run([
             FFMPEG_BIN, "-y",
-            "-i", stitched, "-i", music_path,
-            "-filter_complex", f"[0:v]{vf}[v];{audio_filter}",
+            "-i", stitched, "-i", text_png, "-i", music_path,
+            "-filter_complex",
+            f"[0:v]{vf}[vid];[1:v]format=rgba[txt];[vid][txt]overlay=0:0[v];{audio_filter}",
             "-map", "[v]", "-map", "[a]",
             "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
             "-shortest", output,
         ], "Overlay + music")
     else:
-        # Check if stitched video has an audio stream before using -c:a copy
         probe = subprocess.run(
             [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
              "-show_entries", "stream=codec_type", "-of", "csv=p=0", stitched],
             capture_output=True, text=True,
         )
         has_audio = "audio" in probe.stdout
+        # input 0=video  1=text_png
         cmd = [
-            FFMPEG_BIN, "-y", "-i", stitched,
-            "-vf", vf,
+            FFMPEG_BIN, "-y",
+            "-i", stitched, "-i", text_png,
+            "-filter_complex",
+            f"[0:v]{vf}[vid];[1:v]format=rgba[txt];[vid][txt]overlay=0:0[v]",
+            "-map", "[v]",
             "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
             "-pix_fmt", "yuv420p",
         ]
         if has_audio:
-            cmd += ["-c:a", "copy"]
+            cmd += ["-map", "0:a", "-c:a", "copy"]
         else:
-            cmd += ["-an"]  # no audio
+            cmd += ["-an"]
         cmd.append(output)
         _run(cmd, "Text overlay")
 
