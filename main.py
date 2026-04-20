@@ -425,6 +425,14 @@ def _render_text_to_layer(text: str, font: "ImageFont.FreeTypeFont", color: tupl
     bounds = tmp.getbbox()
     if not bounds:
         return tmp
+    # Add padding so anti-aliased descenders (g, y, p) are never clipped
+    pad = 12
+    bounds = (
+        max(0, bounds[0] - pad),
+        max(0, bounds[1] - pad),
+        min(canvas_w, bounds[2] + pad),
+        min(canvas_h, bounds[3] + pad),
+    )
     return tmp.crop(bounds)
 
 
