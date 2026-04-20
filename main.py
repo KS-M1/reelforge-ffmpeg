@@ -429,12 +429,12 @@ def _render_text_png(
     text_case   = spec.get("text_case", "none")
 
     W, H = 1080, 1920
+    MAX_TEXT_W = int(W * 0.88)  # text must fit within 88% of video width
 
     if font_size_override and font_size_override > 0:
         vid_fs = max(int(font_size_override), 8)
     else:
         vid_fs = max(int(font_size * 4), 64)
-    sub_fs = max(int(vid_fs * 0.55), 16)
 
     main_str = _apply_text_case(main_text or "", text_case)
     sub_str  = subtitle or ""
@@ -444,15 +444,27 @@ def _render_text_png(
     if not font_path or not os.path.exists(font_path):
         font_path = next((p for p in FONT_FILES.values() if os.path.exists(p)), None)
 
-    try:
-        main_font = ImageFont.truetype(font_path, vid_fs) if font_path else ImageFont.load_default()
-        sub_font  = ImageFont.truetype(font_path, sub_fs) if font_path else ImageFont.load_default()
-    except Exception:
-        main_font = ImageFont.load_default()
-        sub_font  = ImageFont.load_default()
+    def _load_font(size: int) -> "ImageFont.FreeTypeFont":
+        try:
+            return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
+        except Exception:
+            return ImageFont.load_default()
 
-    is_dark   = int((text_color.strip("#") + "ff")[:2], 16) < 0x88
-    s_base    = (255, 255, 255) if is_dark else (0, 0, 0)
+    # Auto-fit: shrink font until text fits within MAX_TEXT_W
+    while vid_fs > 16:
+        probe_font = _load_font(vid_fs)
+        tmp = Image.new("RGBA", (5000, 200), (0, 0, 0, 0))
+        bbox = ImageDraw.Draw(tmp).textbbox((0, 0), main_str, font=probe_font, anchor="lt")
+        if (bbox[2] - bbox[0]) <= MAX_TEXT_W:
+            break
+        vid_fs = int(vid_fs * 0.88)  # reduce by ~12% each step
+
+    main_font = _load_font(vid_fs)
+    sub_fs    = max(int(vid_fs * 0.55), 16)
+    sub_font  = _load_font(sub_fs)
+
+    is_dark = int((text_color.strip("#") + "ff")[:2], 16) < 0x88
+    s_base  = (255, 255, 255) if is_dark else (0, 0, 0)
 
     # Render each text element to a tight auto-cropped layer
     main_layer = _render_text_to_layer(main_str, main_font, _hex_to_rgba(text_color), s_base)
