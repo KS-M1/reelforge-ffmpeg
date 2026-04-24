@@ -750,9 +750,10 @@ async def test_render(
 
 
 class StitchRequest(BaseModel):
-    clips:           list[Union[ClipInput, str]]
-    quality:         Optional[str] = "high"
-    transition_type: Optional[str] = "none"   # none | dissolve | fade | circleopen | pixelize
+    clips:                list[Union[ClipInput, str]]
+    quality:              Optional[str] = "high"
+    transition_type:      Optional[str] = "none"   # none | dissolve | fade | circleopen | pixelize
+    extract_frames_count: Optional[int] = None     # number of per-clip frames to extract (one per clip)
 
 
 class OverlayRequest(BaseModel):
@@ -1030,6 +1031,34 @@ def _extract_frame(stitched: str, job_dir: str) -> str:
         return base64.b64encode(f.read()).decode()
 
 
+def _extract_frames_per_clip(job_dir: str, clip_count: int) -> list[str]:
+    """Extract one representative keyframe from each normalized clip (norm_0.mp4 … norm_N.mp4).
+    Returns a list of base64-encoded JPEGs — one per clip, skipping any missing files."""
+    frames: list[str] = []
+    for i in range(clip_count):
+        norm_path  = f"{job_dir}/norm_{i}.mp4"
+        frame_path = f"{job_dir}/clip_frame_{i}.jpg"
+        if not os.path.exists(norm_path):
+            break
+        try:
+            duration = _get_clip_duration(norm_path)
+            seek     = max(0.5, duration / 2)
+            result   = subprocess.run([
+                FFMPEG_BIN, "-y",
+                "-ss", str(seek),
+                "-i", norm_path,
+                "-vframes", "1",
+                "-q:v", "2",
+                frame_path,
+            ], capture_output=True, text=True)
+            if result.returncode == 0 and os.path.exists(frame_path):
+                with open(frame_path, "rb") as f:
+                    frames.append(base64.b64encode(f.read()).decode())
+        except Exception:
+            pass  # non-fatal — skip this clip's frame
+    return frames
+
+
 def _apply_overlay(stitched: str, job_dir: str, crf: int,
                    spec: dict, main_text: str, position: str,
                    music_url: Optional[str],
@@ -1136,13 +1165,18 @@ async def stitch(req: StitchRequest):
                                     transition_type=req.transition_type or "none")
         frame_b64 = _extract_frame(stitched, job_dir)
 
+        # Extract one frame per clip when requested (for multi-clip image analysis)
+        frames_b64: list[str] = []
+        if req.extract_frames_count and req.extract_frames_count > 0:
+            frames_b64 = _extract_frames_per_clip(job_dir, req.extract_frames_count)
+
         STITCH_STORE[job_id] = {
             "dir":        job_dir,
             "stitched":   stitched,
             "crf":        crf,
             "created_at": time.time(),
         }
-        return {"video_id": job_id, "frame_b64": frame_b64}
+        return {"video_id": job_id, "frame_b64": frame_b64, "frames_b64": frames_b64}
 
     except HTTPException:
         shutil.rmtree(job_dir, ignore_errors=True)
